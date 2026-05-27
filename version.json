@@ -1,0 +1,18 @@
+{
+  "version": "2.0.15",
+  "installer": {
+    "url": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/ClinicManager_Setup_2.0.15.exe",
+    "file_name": "ClinicManager_Setup_2.0.15.exe",
+    "silent_args": [
+      "/SP-",
+      "/VERYSILENT",
+      "/SUPPRESSMSGBOXES",
+      "/NORESTART"
+    ]
+  },
+  "files": {
+    "main.py": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/main.py",
+    "db.py": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/db.py",
+    "version_manager.py": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/version_manager.py"
+  }
+}

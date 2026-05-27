@@ -33,7 +33,7 @@ from ui_utils import (
     get_save_file_path, get_open_file_path, get_excel_save_path, get_excel_open_path,
     create_link_button, create_telegram_button, create_youtube_button,
     create_auto_field, create_button, create_primary_button, create_success_button, create_danger_button,
-    parse_treatment_lines, get_treatment_lines
+    parse_treatment_lines, get_treatment_lines, get_khmer_font, available_khmer_fonts
 )
 from widgets import CreatorHeader, CreatorFooter, BaseDialog, CompositeInputWidget, AutoInputWidget, FormSection
 from constants import (
@@ -77,6 +77,242 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 # Import license management functions from dedicated module
 from license_manager import generate_license_key, validate_license
+
+
+MESSAGE_BOX_STYLESHEET = """
+    QMessageBox {
+        background-color: #1e272e;
+    }
+    QMessageBox QLabel {
+        color: #ffffff;
+        min-height: 24px;
+        min-width: 260px;
+        padding: 6px 10px;
+    }
+    QMessageBox QPushButton {
+        background-color: #0fbcf9;
+        color: #000000;
+        border: none;
+        border-radius: 5px;
+        padding: 8px 18px;
+        min-width: 90px;
+        font-weight: bold;
+    }
+    QMessageBox QPushButton:hover {
+        background-color: #00a8ff;
+    }
+"""
+
+
+def build_message_box_stylesheet(
+    button_bg="#0fbcf9",
+    button_color="#000000",
+    button_hover="#00a8ff",
+    label_min_width=260,
+    button_min_width=90,
+):
+    return f"""
+        QMessageBox {{
+            background-color: #1e272e;
+        }}
+        QMessageBox QLabel {{
+            color: white;
+            font-size: 13px;
+            min-height: 24px;
+            min-width: {label_min_width}px;
+            padding: 6px 10px;
+        }}
+        QMessageBox QPushButton {{
+            background-color: {button_bg};
+            color: {button_color};
+            font-weight: bold;
+            padding: 8px 20px;
+            border-radius: 5px;
+            min-width: {button_min_width}px;
+        }}
+        QMessageBox QPushButton:hover {{
+            background-color: {button_hover};
+        }}
+    """
+
+
+def cloud_sync_period_options(include_entered_url=False):
+    options = [
+        "📅 ថ្ងៃនេះ (Today Only)",
+        "📆 សប្តាហ៍នេះ (This Week)",
+        "🗓️ ខែនេះ (This Month)",
+        "📋 ខែមុន (Last Month)",
+        "⚙️ កំណត់ដោយខ្លួនឯង (Custom Range)",
+        "📦 ទាំងអស់ (Full Database)",
+    ]
+    if include_entered_url:
+        options.append("🔗 ប្រើ URL ដែលបានបញ្ចូល (Use Entered URL)")
+    return options
+
+
+def setup_excel_report_workbook(sheet_title, title_text, title_color, header_color, column_widths):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill
+
+    wb = Workbook()
+    ws = wb.active  # type: ignore
+    ws.title = sheet_title  # type: ignore
+
+    for column, width in column_widths.items():
+        ws.column_dimensions[column].width = width  # type: ignore
+
+    styles = {
+        "header_fill": PatternFill(start_color=header_color, end_color=header_color, fill_type="solid"),
+        "header_font": Font(bold=True, color="FFFFFFFF", size=12),
+        "center_align": Alignment(horizontal="center", vertical="center"),
+        "section_fill": PatternFill(start_color="FFD5F5E3", end_color="FFD5F5E3", fill_type="solid"),
+        "section_font": Font(bold=True, size=12, color="FFC0392B"),
+    }
+
+    ws.merge_cells('A1:E1')  # type: ignore
+    ws['A1'] = title_text  # type: ignore
+    ws['A1'].font = Font(bold=True, size=16, color=title_color)  # type: ignore
+    ws['A1'].alignment = styles["center_align"]  # type: ignore
+    return wb, ws, styles
+
+
+def add_excel_headers(ws, row, headers, styles):
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=row, column=col, value=header)  # type: ignore
+        cell.fill = styles["header_fill"]  # type: ignore
+        cell.font = styles["header_font"]  # type: ignore
+        cell.alignment = styles["center_align"]  # type: ignore
+
+
+def save_excel_report(parent, wb, filename, dialog_title, success_message):
+    file_path, _ = QFileDialog.getSaveFileName(parent, dialog_title, filename, "Excel Files (*.xlsx)")
+    if not file_path:
+        return
+    wb.save(file_path)
+    parent.statusBar.showMessage(f"បាននាំចេញទៅកាន់ {os.path.basename(file_path)}", 5000)
+    QMessageBox.information(parent, "ជោគជ័យ", f"{success_message}\n\n{os.path.basename(file_path)}")
+
+
+def style_progress_dialog(progress):
+    khmer_font = get_khmer_font()
+    label = QLabel(progress.labelText())
+    label.setFont(QFont(khmer_font, 11))
+    label.setWordWrap(True)
+    label.setMinimumWidth(320)
+    label.setMinimumHeight(36)
+    label.setStyleSheet(f"""
+        QLabel {{
+            color: #ffffff;
+            background-color: transparent;
+            font-family: "{khmer_font}";
+            font-size: 13px;
+            padding: 4px 6px;
+        }}
+    """)
+    progress.setLabel(label)
+    progress.setFont(QFont(khmer_font, 10))
+    progress.setMinimumWidth(390)
+    progress.setStyleSheet(f"""
+        QProgressDialog {{
+            background-color: #1e272e;
+            color: white;
+            font-family: "{khmer_font}";
+            min-width: 360px;
+        }}
+        QProgressDialog QLabel {{
+            color: white;
+            background-color: transparent;
+            font-size: 12px;
+            min-width: 320px;
+            min-height: 34px;
+            padding: 4px;
+        }}
+        QProgressBar {{
+            border: 1px solid #485460;
+            border-radius: 4px;
+            background-color: #dfe6e9;
+            color: #2d3436;
+            min-height: 18px;
+            text-align: center;
+        }}
+        QProgressBar::chunk {{
+            background-color: #05c46b;
+            border-radius: 3px;
+        }}
+        QPushButton {{
+            background-color: #0fbcf9;
+            color: black;
+            border: none;
+            border-radius: 4px;
+            padding: 7px 18px;
+            font-weight: bold;
+            min-width: 74px;
+        }}
+        QPushButton:hover {{
+            background-color: #00cec9;
+        }}
+    """)
+    return progress
+
+
+def build_patient_share_database(target_db_path, patient_rows):
+    """Create a share-safe database containing only the patient table/data."""
+    with sqlite3.connect(target_db_path) as temp_conn:
+        temp_cur = temp_conn.cursor()
+
+        with sqlite3.connect(db.DB_NAME) as source_conn:
+            source_cur = source_conn.cursor()
+            source_cur.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='patient'"
+            )
+            patient_schema_row = source_cur.fetchone()
+            if not patient_schema_row or not patient_schema_row[0]:
+                raise Exception("Patient table schema was not found in the source database.")
+
+            temp_cur.execute(patient_schema_row[0])
+            patient_columns = [
+                row[1] for row in source_cur.execute("PRAGMA table_info(patient)").fetchall()
+            ]
+
+            if patient_rows:
+                placeholders = ",".join(["?"] * len(patient_columns))
+                temp_cur.executemany(
+                    f"INSERT INTO patient ({','.join(patient_columns)}) VALUES ({placeholders})",
+                    patient_rows
+                )
+
+        temp_conn.commit()
+
+
+def get_clinic_appdata_dir(fallback_dir=None):
+    """Return a writable ClinicManager app data directory."""
+    try:
+        import ctypes.wintypes
+        CSIDL_LOCAL_APPDATA = 28
+        SHGFP_TYPE_CURRENT = 0
+        buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
+        ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_LOCAL_APPDATA, None, SHGFP_TYPE_CURRENT, buf)
+        appdata_dir = os.path.join(buf.value, 'ClinicManager')
+    except Exception:
+        base_dir = fallback_dir or os.getenv('TEMP') or os.getenv('TMP') or os.getcwd()
+        appdata_dir = os.path.join(base_dir, 'ClinicManager')
+
+    os.makedirs(appdata_dir, exist_ok=True)
+    return appdata_dir
+
+
+def get_writable_settings_file(fallback_dir):
+    return os.path.join(get_clinic_appdata_dir(fallback_dir), 'settings.ini')
+
+
+def create_database_backup(backup_dir, prefix="clinic_backup_upload"):
+    backup_dir = backup_dir or os.path.join(tempfile.gettempdir(), "ClinicManager", "backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    backup_path = os.path.join(backup_dir, f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M')}.db")
+    if os.path.exists(db.DB_NAME):
+        shutil.copy2(db.DB_NAME, backup_path)
+        db.logger.info(f"Backup created before upload: {backup_path}")
+    return backup_path
 
 
 def get_machine_id():
@@ -247,7 +483,7 @@ class ChangePasswordDialog(BaseDialog):
         self.content_layout.setContentsMargins(18, 14, 18, 14)
         self.content_layout.setSpacing(8)
 
-        khmer_font_name = self._get_khmer_font()
+        khmer_font_name = get_khmer_font()
         input_stylesheet = """
             QLineEdit {
                 background-color: #ffffff;
@@ -315,21 +551,6 @@ class ChangePasswordDialog(BaseDialog):
 
         # Set focus
         self.txt_old_pwd.setFocus()
-
-    def _get_khmer_font(self):
-        font_families = QFontDatabase().families()
-        for font_name in [
-            "Noto Sans Khmer",
-            "Khmer OS Battambang",
-            "Khmer OS Siemreap",
-            "Khmer OS",
-            "Khmer UI",
-            "Leelawadee UI",
-            "Segoe UI",
-        ]:
-            if font_name in font_families:
-                return font_name
-        return "Segoe UI"
 
     def change_password(self):
         old_pwd = self.txt_old_pwd.text().strip()
@@ -534,7 +755,7 @@ class TelegramBotSetupDialog(BaseDialog):
         super().__init__("⚙️ កំណត់ Telegram Bot", size=(600, 550),
                         show_creator_header=False, show_creator_footer=False)
 
-        self.khmer_font_name = self._get_khmer_font()
+        self.khmer_font_name = get_khmer_font()
 
         layout = self.content_layout
         layout.setContentsMargins(20, 15, 20, 15)
@@ -645,24 +866,6 @@ class TelegramBotSetupDialog(BaseDialog):
         btn_save.clicked.connect(self.accept)
         layout.addWidget(btn_save)
 
-    def _get_khmer_font(self):
-        """Get the best available Khmer-compatible font"""
-        font_db = QFontDatabase()
-        font_families = font_db.families()
-        khmer_fonts = [
-            "Noto Sans Khmer",
-            "Khmer OS Battambang",
-            "Khmer OS Siemreap",
-            "Khmer OS",
-            "Khmer UI",
-            "Leelawadee UI",
-            "Segoe UI"
-        ]
-        for font_name in khmer_fonts:
-            if font_name in font_families:
-                return font_name
-        return "Segoe UI"
-
     def test_connection(self):
         """ពិនិត្យថា Bot Token និង Chat ID ត្រឹមត្រូវទេ"""
         bot_token = self.txt_bot.text().strip()
@@ -703,7 +906,7 @@ class CloudSyncHelpDialog(BaseDialog):
         self.setWindowModality(Qt.WindowModal)  # type: ignore[attr-defined]
 
         # Get Khmer font
-        self.khmer_font = self._get_khmer_font()
+        self.khmer_font = get_khmer_font()
 
         layout = self.content_layout
         layout.setContentsMargins(20, 15, 20, 15)
@@ -880,24 +1083,6 @@ class CloudSyncHelpDialog(BaseDialog):
         btn_layout.addWidget(btn_close)
         layout.addLayout(btn_layout)
 
-    def _get_khmer_font(self):
-        """Get the best available Khmer-compatible font"""
-        font_db = QFontDatabase()
-        font_families = font_db.families()
-        khmer_fonts = [
-            "Noto Sans Khmer",
-            "Khmer OS Battambang",
-            "Khmer OS Siemreap",
-            "Khmer OS",
-            "Khmer UI",
-            "Leelawadee UI",
-            "Segoe UI"
-        ]
-        for font_name in khmer_fonts:
-            if font_name in font_families:
-                return font_name
-        return "Segoe UI"
-
     def _create_option_card(self, icon, title, steps, example, color):
         """Create a styled card for each option"""
         card = QFrame()
@@ -960,32 +1145,8 @@ class LoginDialog(BaseDialog):
             self.base_dir = os.path.dirname(os.path.abspath(__file__))
 
         # កំណត់ Backup directory (use AppData to avoid permission issues)
-        try:
-            import ctypes.wintypes
-            CSIDL_LOCAL_APPDATA = 28
-            SHGFP_TYPE_CURRENT = 0
-            buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-            ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_LOCAL_APPDATA, None, SHGFP_TYPE_CURRENT, buf)
-            appdata_dir = os.path.join(buf.value, 'ClinicManager')
-            if not os.path.exists(appdata_dir):
-                os.makedirs(appdata_dir, exist_ok=True)
-            self.backup_dir = os.path.join(appdata_dir, 'backups')
-            if not os.path.exists(self.backup_dir):
-                os.makedirs(self.backup_dir, exist_ok=True)
-        except Exception as e:
-            # If AppData fails, use TEMP directory as fallback (always writable)
-            try:
-                temp_dir = os.getenv('TEMP') or os.getenv('TMP') or os.getcwd()
-                appdata_dir = os.path.join(temp_dir, 'ClinicManager')
-                if not os.path.exists(appdata_dir):
-                    os.makedirs(appdata_dir, exist_ok=True)
-                self.backup_dir = os.path.join(appdata_dir, 'backups')
-                if not os.path.exists(self.backup_dir):
-                    os.makedirs(self.backup_dir, exist_ok=True)
-            except Exception:
-                # Last resort: skip backup directory creation
-                self.backup_dir = None
-                print(f"Warning: Could not create backup directory: {e}")
+        self.backup_dir = os.path.join(get_clinic_appdata_dir(os.getenv('TEMP') or os.getenv('TMP') or os.getcwd()), 'backups')
+        os.makedirs(self.backup_dir, exist_ok=True)
 
         # កំណត់ current_user (នឹងត្រូវបានកំណត់ពេល Login ជោគជ័យ)
         self.current_user = ""
@@ -994,18 +1155,7 @@ class LoginDialog(BaseDialog):
         self.config = configparser.ConfigParser()
         
         # Use AppData for writable settings file
-        try:
-            import ctypes.wintypes
-            CSIDL_LOCAL_APPDATA = 28
-            SHGFP_TYPE_CURRENT = 0
-            buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-            ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_LOCAL_APPDATA, None, SHGFP_TYPE_CURRENT, buf)
-            appdata_dir = os.path.join(buf.value, 'ClinicManager')
-            if not os.path.exists(appdata_dir):
-                os.makedirs(appdata_dir)
-            writable_settings_file = os.path.join(appdata_dir, 'settings.ini')
-        except Exception:
-            writable_settings_file = os.path.join(self.base_dir, 'settings.ini')
+        writable_settings_file = get_writable_settings_file(self.base_dir)
 
         # Try to read from AppData first, then fall back to program dir
         settings_to_read = writable_settings_file if os.path.exists(writable_settings_file) else os.path.join(self.base_dir, 'settings.ini')
@@ -1022,25 +1172,7 @@ class LoginDialog(BaseDialog):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #1e272e, stop:1 #34495e);
             }
-            QMessageBox {
-                background-color: #1e272e;
-            }
-            QMessageBox QLabel {
-                color: #ffffff;
-                min-height: 24px;
-                min-width: 260px;
-                padding: 6px 10px;
-            }
-            QMessageBox QPushButton {
-                background-color: #0fbcf9;
-                color: #000000;
-                border: none;
-                border-radius: 5px;
-                padding: 8px 18px;
-                min-width: 90px;
-                font-weight: bold;
-            }
-        """)
+        """ + MESSAGE_BOX_STYLESHEET)
 
         layout = self.content_layout
         compact_login = getattr(self, "compact_login_layout", False)
@@ -1052,7 +1184,7 @@ class LoginDialog(BaseDialog):
         layout.setSpacing(6 if compact_login else 12)
 
         # Use Khmer-compatible font
-        khmer_font_name = self._get_khmer_font()
+        khmer_font_name = get_khmer_font()
 
         # Common stylesheet for input fields
         input_stylesheet = """
@@ -1221,7 +1353,7 @@ class LoginDialog(BaseDialog):
         # Help button for Cloud Sync
         self.btn_sync_help = QPushButton("❓ ជំនួយ")
         self.btn_sync_help.setFixedHeight(32 if compact_login else 35)
-        self.btn_sync_help.setFont(QFont(self._get_khmer_font(), 12, QFont.Bold))
+        self.btn_sync_help.setFont(QFont(get_khmer_font(), 12, QFont.Bold))
         self.btn_sync_help.setCursor(Qt.PointingHandCursor)  # type: ignore[attr-defined]
         self.btn_sync_help.setStyleSheet("""
             QPushButton {
@@ -1242,7 +1374,7 @@ class LoginDialog(BaseDialog):
         # Upload to Cloud button
         self.btn_upload = QPushButton("⬆️ ផ្ញើទៅ Cloud")
         self.btn_upload.setFixedHeight(32 if compact_login else 35)
-        self.btn_upload.setFont(QFont(self._get_khmer_font(), 12, QFont.Bold))
+        self.btn_upload.setFont(QFont(get_khmer_font(), 12, QFont.Bold))
         self.btn_upload.setCursor(Qt.PointingHandCursor)  # type: ignore[attr-defined]
         self.btn_upload.setStyleSheet("""
             QPushButton {
@@ -1341,27 +1473,6 @@ class LoginDialog(BaseDialog):
             except:
                 pass
 
-    def _get_khmer_font(self):
-        """Get the best available Khmer-compatible font"""
-        font_db = QFontDatabase()
-        font_families = font_db.families()
-
-        # Priority list of Khmer-compatible fonts
-        khmer_fonts = [
-            "Khmer OS Battambang",
-            "Khmer OS Siemreap",
-            "Khmer OS",
-            "Leelawadee UI",
-            "Noto Sans Khmer",
-            "Segoe UI"  # Fallback
-        ]
-
-        for font_name in khmer_fonts:
-            if font_name in font_families:
-                return font_name
-
-        return "Segoe UI"  # Ultimate fallback
-
     def show_cloud_sync_help(self):
         """បង្ហាញការណែនាំអំពីរបៀបបង្កើត URL សម្រាប់ Cloud Sync"""
         dialog = CloudSyncHelpDialog(self)
@@ -1439,6 +1550,8 @@ class LoginDialog(BaseDialog):
                 ['git', '--version'],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=5
             )
             return result.returncode == 0
@@ -1506,16 +1619,7 @@ class LoginDialog(BaseDialog):
                 period_label = "ទាំងអស់ (Full Database)"
 
             # បង្កើត Backup មុនពេល Upload
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-            backup_name = f"clinic_backup_upload_{timestamp}.db"
-            backup_dir = self.backup_dir or os.path.join(tempfile.gettempdir(), "ClinicManager", "backups")
-            os.makedirs(backup_dir, exist_ok=True)
-            backup_path = os.path.join(backup_dir, backup_name)
-
-            if os.path.exists(db.DB_NAME):
-                import shutil
-                shutil.copy2(db.DB_NAME, backup_path)
-                db.logger.info(f"Backup created before upload: {backup_path}")
+            backup_path = create_database_backup(self.backup_dir)
 
             # ទាញយកអ្នកជំងឺតាមរយៈពេល
             if start_date and end_date:
@@ -1552,6 +1656,7 @@ class LoginDialog(BaseDialog):
                 f"កំពុងរៀបចំរបាយការណ៍...",
                 "បោះបង់", 0, 100, self
             )
+            style_progress_dialog(progress)
             progress.setWindowTitle(f"⬆️ Upload: {period_label}")
             progress.setWindowModality(Qt.WindowModal)  # type: ignore[attr-defined]
             progress.setMinimumDuration(0)
@@ -1593,37 +1698,8 @@ class LoginDialog(BaseDialog):
             QApplication.processEvents()
 
             # បង្កើត database ថ្មី
-            import sqlite3
             try:
-                temp_conn = sqlite3.connect(temp_db)
-                temp_cur = temp_conn.cursor()
-
-                # ចម្លង structure
-                with sqlite3.connect(db.DB_NAME) as source_conn:
-                    source_cur = source_conn.cursor()
-                    source_cur.execute(
-                        "SELECT sql FROM sqlite_master WHERE type='table' AND name='patient'"
-                    )
-                    patient_schema_row = source_cur.fetchone()
-                    if not patient_schema_row or not patient_schema_row[0]:
-                        raise Exception("Patient table schema was not found in the source database.")
-
-                    temp_cur.execute(patient_schema_row[0])
-                    patient_columns = [
-                        row[1] for row in source_cur.execute("PRAGMA table_info(patient)").fetchall()
-                    ]
-
-                    if patients_selected:
-                        placeholders = ",".join(["?"] * len(patient_columns))
-                        temp_cur.executemany(
-                            f"INSERT INTO patient ({','.join(patient_columns)}) VALUES ({placeholders})",
-                            patients_selected
-                        )
-
-                    temp_conn.commit()
-
-                # បិទ connection
-                temp_conn.close()
+                build_patient_share_database(temp_db, patients_selected)
 
                 # ពិនិត្យថា file ត្រូវបានបង្កើត
                 if not os.path.exists(temp_db):
@@ -1704,6 +1780,8 @@ class LoginDialog(BaseDialog):
                     cmd,
                     capture_output=True,
                     text=True,
+                    encoding='utf-8',
+                    errors='replace',
                     cwd=temp_git_dir,
                     timeout=120
                 )
@@ -1780,29 +1858,13 @@ class LoginDialog(BaseDialog):
                 f"<span style='color: #d2dae2;'>{backup_path}</span><br><br>"
                 f"<span style='color: #05c46b;'>អ្នកអាច Merge ពី GitHub លើ PC ផ្សេង!</span>"
             )
-            success_msg.setStyleSheet("""
-                QMessageBox {
-                    background-color: #1e272e;
-                }
-                QMessageBox QLabel {
-                    color: white;
-                    font-size: 13px;
-                    min-height: 24px;
-                    min-width: 300px;
-                    padding: 6px 10px;
-                }
-                QMessageBox QPushButton {
-                    background-color: #05c46b;
-                    color: white;
-                    font-weight: bold;
-                    padding: 8px 20px;
-                    border-radius: 5px;
-                    min-width: 80px;
-                }
-                QMessageBox QPushButton:hover {
-                    background-color: #06bc5c;
-                }
-            """)
+            success_msg.setStyleSheet(build_message_box_stylesheet(
+                button_bg="#05c46b",
+                button_color="white",
+                button_hover="#06bc5c",
+                label_min_width=300,
+                button_min_width=80,
+            ))
             success_msg.addButton("យល់ហើយ 👍", QMessageBox.AcceptRole)
             success_msg.exec_()
 
@@ -1903,18 +1965,11 @@ class LoginDialog(BaseDialog):
 
             # បង្កើត Backup មុនពេលផ្ញើ
             timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-            backup_name = f"clinic_backup_upload_{timestamp}.db"
-            backup_dir = self.backup_dir or os.path.join(tempfile.gettempdir(), "ClinicManager", "backups")
-            os.makedirs(backup_dir, exist_ok=True)
-            backup_path = os.path.join(backup_dir, backup_name)
-
-            if os.path.exists(db.DB_NAME):
-                import shutil
-                shutil.copy2(db.DB_NAME, backup_path)
-                db.logger.info(f"Backup created before upload: {backup_path}")
+            backup_path = create_database_backup(self.backup_dir)
 
             # បង្កើត Progress Dialog
             progress = QProgressDialog("កំពុងផ្ញើទិន្នន័យទៅ Telegram...", "បោះបង់", 0, 100, self)
+            style_progress_dialog(progress)
             progress.setWindowTitle("⬆️ Upload to Cloud")
             progress.setWindowModality(Qt.WindowModal)  # type: ignore[attr-defined]
             progress.setMinimumDuration(0)
@@ -2096,9 +2151,11 @@ class LoginDialog(BaseDialog):
             return
 
         # ៥. ទាញយក file ជាមួយ Progress Dialog
+        progress = None
         try:
             # បង្កើត Progress Dialog
             progress = QProgressDialog("កំពុងទាញយកទិន្នន័យពី Cloud...", "បោះបង់", 0, 100, self)
+            style_progress_dialog(progress)
             progress.setWindowTitle("☁️ Cloud Sync")
             progress.setWindowModality(Qt.WindowModal)  # type: ignore[attr-defined]
             progress.setMinimumDuration(0)
@@ -2153,10 +2210,12 @@ class LoginDialog(BaseDialog):
 
             progress.setValue(100)
             progress.setLabelText("✅ ទាញយកជោគជ័យ! កំពុងផ្ទៀងផ្ទាត់...")
+            QApplication.processEvents()
 
             # ៦. ផ្ទៀងផ្ទាត់ថា file ជា SQLite database ត្រឹមត្រូវ
             if not self._validate_sqlite_file(temp_db):
                 os.remove(temp_db)
+                progress.close()
                 QMessageBox.critical(
                     self,
                     "❌ File មិនត្រឹមត្រូវ",
@@ -2167,7 +2226,9 @@ class LoginDialog(BaseDialog):
                 return
 
             # ៧. Auto Merge ទិន្ននយ (ជានិច្ច មិនជំនួសទេ)
-            merged_count, skipped_count = self._merge_databases(temp_db)
+            progress.setLabelText("✅ ផ្ទៀងផ្ទាត់រួចរាល់! កំពុងបញ្ចូលទិន្នន័យ...")
+            QApplication.processEvents()
+            merged_count, skipped_count = db.merge_database_file(temp_db)
             msg = (
                 "✅ បញ្ចូលទិន្នន័យជោគជ័យ! (Auto Merge)\n\n"
                 f"📅 រយៈពេល: {download_period_label}\n"
@@ -2178,6 +2239,7 @@ class LoginDialog(BaseDialog):
 
             # សម្អាត temp file
             os.remove(temp_db)
+            progress.close()
 
             success_dialog = QMessageBox(self)
             success_dialog.setIcon(QMessageBox.Information)
@@ -2193,33 +2255,19 @@ class LoginDialog(BaseDialog):
                 f"<span style='color: #ffa801;'>💾 Backup ត្រូវបានរក្សាទុកក្នុង:</span><br>"
                 f"<span style='color: #d2dae2;'>{backup_path}</span>"
             )
-            success_dialog.setStyleSheet("""
-                QMessageBox {
-                    background-color: #1e272e;
-                }
-                QMessageBox QLabel {
-                    color: white;
-                    font-size: 13px;
-                    min-height: 24px;
-                    min-width: 300px;
-                    padding: 6px 10px;
-                }
-                QMessageBox QPushButton {
-                    background-color: #0fbcf9;
-                    color: black;
-                    font-weight: bold;
-                    padding: 8px 20px;
-                    border-radius: 5px;
-                    min-width: 80px;
-                }
-                QMessageBox QPushButton:hover {
-                    background-color: #00cec9;
-                }
-            """)
+            success_dialog.setStyleSheet(build_message_box_stylesheet(
+                button_bg="#0fbcf9",
+                button_color="black",
+                button_hover="#00cec9",
+                label_min_width=300,
+                button_min_width=80,
+            ))
             success_dialog.addButton("OK", QMessageBox.AcceptRole)
             success_dialog.exec_()
 
         except Exception as e:
+            if progress is not None:
+                progress.close()
             error_msg = str(e)
             if "cancelled" in error_msg.lower() or "បោះបង់" in error_msg:
                 QMessageBox.information(self, "បោះបង់", "ការទាញយកត្រូវបានបោះបង់។")
@@ -2275,18 +2323,7 @@ class LoginDialog(BaseDialog):
         except Exception as e:
             QMessageBox.warning(self, "⚠️ មិនអាចលុប URL", f"មិនអាចលុប URL ដែលបានចងចាំបានទេ: {str(e)}")
 
-    def _get_cloud_sync_url_input(self, initial_url):
-        """Show a styled input dialog for Cloud Sync URL."""
-        dialog = QInputDialog(self)
-        dialog.setWindowTitle("☁️ Cloud Sync - ទាញយកទិន្នន័យពី Cloud")
-        dialog.setLabelText(
-            "សូមបញ្ចូល Link សម្រាប់ទាញយក Database (URL):\n\n"
-            "💡 URL នឹងត្រូវបានចងចាំស្វ័យប្រវត្តិ។"
-        )
-        dialog.setTextValue(initial_url)
-        dialog.setOkButtonText("ទាញយក")
-        dialog.setCancelButtonText("បោះបង់")
-        dialog.resize(640, 180)
+    def _style_url_input_dialog(self, dialog):
         dialog.setStyleSheet("""
             QInputDialog {
                 background-color: #1e272e;
@@ -2318,42 +2355,20 @@ class LoginDialog(BaseDialog):
             }
         """)
 
-        ok = dialog.exec_() == QDialog.Accepted
-        return dialog.textValue(), ok
-
-    def _get_cloud_download_period_choice(self):
-        """Show period choices and return the matching Cloud Sync database filename."""
-        now = datetime.now()
-        today_str = now.strftime("%d/%m/%Y")
-        period_options = [
-            "📅 ថ្ងៃនេះ (Today Only)",
-            "📆 សប្ដាហ៍នេះ (This Week)",
-            "🗓️ ខែនេះ (This Month)",
-            "📋 ខែមុន (Last Month)",
-            "⚙️ កំណត់ដោយខ្លួនឯង (Custom Range)",
-            "📦 ទាំងអស់ (Full Database)",
-            "🔗 ប្រើ URL ដែលបានបញ្ចូល (Use Entered URL)",
-        ]
-
-        dialog = QInputDialog(self)
-        dialog.setWindowTitle("📅 ជ្រើសរើសកាលបរិច្ឆេទទាញយក")
-        dialog.setLabelText(
-            f"តើអ្នកចង់ទាញយកទិន្នន័យពី Cloud រយៈពេលណា?\n\n"
-            f"ថ្ងៃនេះ: {today_str}"
-        )
-        dialog.setComboBoxItems(period_options)
-        dialog.setComboBoxEditable(False)
-        dialog.setTextValue(period_options[2])
-        dialog.setOkButtonText("ទាញយក")
-        dialog.setCancelButtonText("បោះបង់")
-        dialog.resize(460, 190)
-        dialog.setStyleSheet("""
-            QInputDialog { background-color: #2c3e50; }
-            QLabel {
-                color: #f5f6fa;
-                font-size: 12px;
-                background: transparent;
+    def _style_light_input_dialog(self, dialog, editor_selector="QComboBox"):
+        editor_style = {
+            "QTextEdit": """
+            QTextEdit {
+                background-color: #f5f6fa;
+                color: #000000;
+                border: 1px solid #3498db;
+                border-radius: 4px;
+                padding: 8px;
+                selection-background-color: #74b9ff;
+                selection-color: #000000;
             }
+            """,
+            "QComboBox": """
             QComboBox {
                 background-color: #f5f6fa;
                 color: #000000;
@@ -2361,6 +2376,8 @@ class LoginDialog(BaseDialog):
                 border-radius: 4px;
                 padding: 6px 8px;
                 min-height: 30px;
+                selection-background-color: #dfe6e9;
+                selection-color: #000000;
             }
             QComboBox QAbstractItemView {
                 background-color: #ffffff;
@@ -2369,23 +2386,109 @@ class LoginDialog(BaseDialog):
                 selection-color: #000000;
                 border: 1px solid #95a5a6;
             }
-            QPushButton {
+            """,
+        }.get(editor_selector, "")
+
+        dialog.setStyleSheet(f"""
+            QInputDialog {{
+                background-color: #2c3e50;
+            }}
+            QLabel {{
+                color: #f5f6fa;
+                font-size: 12px;
+                background: transparent;
+            }}
+            {editor_style}
+            QPushButton {{
                 background-color: #f5f6fa;
                 color: #000000;
                 border: 1px solid #74b9ff;
                 padding: 6px 18px;
                 min-width: 90px;
-            }
-            QPushButton:hover { background-color: #dfe6e9; }
+            }}
+            QPushButton:hover {{
+                background-color: #dfe6e9;
+            }}
         """)
-        combo = dialog.findChild(QComboBox)
-        if combo:
-            combo.setCurrentIndex(2)
 
+    def _configure_input_dialog(
+        self,
+        title,
+        label,
+        text_value="",
+        ok_text="OK",
+        cancel_text="Cancel",
+        size=(430, 180),
+        style="light",
+        combo_items=None,
+        combo_index=None,
+        multiline=False,
+    ):
+        dialog = QInputDialog(self)
+        if multiline:
+            dialog.setInputMode(QInputDialog.TextInput)
+            dialog.setOption(QInputDialog.UsePlainTextEditForTextInput, True)
+        dialog.setWindowTitle(title)
+        dialog.setLabelText(label)
+        if combo_items is not None:
+            dialog.setComboBoxItems(combo_items)
+            dialog.setComboBoxEditable(False)
+        dialog.setTextValue(text_value)
+        dialog.setOkButtonText(ok_text)
+        dialog.setCancelButtonText(cancel_text)
+        dialog.resize(*size)
+        if style == "url":
+            self._style_url_input_dialog(dialog)
+        else:
+            self._style_light_input_dialog(dialog, "QTextEdit" if multiline else "QComboBox")
+        if combo_index is not None:
+            combo = dialog.findChild(QComboBox)
+            if combo:
+                combo.setCurrentIndex(combo_index)
+        return dialog
+
+    def _exec_configured_input_dialog(self, *args, **kwargs):
+        dialog = self._configure_input_dialog(*args, **kwargs)
+        ok = dialog.exec_() == QDialog.Accepted
+        return dialog.textValue(), ok
+
+    def _get_cloud_sync_url_input(self, initial_url):
+        """Show a styled input dialog for Cloud Sync URL."""
+        return self._exec_configured_input_dialog("Cloud Sync - ទាញយកទិន្នន័យពី Cloud", "សូមបញ្ចូល Link សម្រាប់ទាញយក Database (URL):\n\nURL នឹងត្រូវបានចងចាំស្វ័យប្រវត្តិ។", text_value=initial_url, ok_text="ទាញយក", cancel_text="បោះបង់", size=(640, 180), style="url")
+
+    def _exec_period_choice_dialog(self, title, label, period_options, default_index, ok_text, cancel_text, size):
+        dialog = self._configure_input_dialog(
+            title,
+            label,
+            combo_items=period_options,
+            text_value=period_options[default_index],
+            ok_text=ok_text,
+            cancel_text=cancel_text,
+            size=size,
+            combo_index=default_index,
+        )
         if dialog.exec_() != QDialog.Accepted:
+            return "", False
+        return dialog.textValue(), True
+
+    def _get_cloud_download_period_choice(self):
+        """Show period choices and return the matching Cloud Sync database filename."""
+        now = datetime.now()
+        today_str = now.strftime("%d/%m/%Y")
+        period_options = cloud_sync_period_options(include_entered_url=True)
+        choice, ok = self._exec_period_choice_dialog(
+            "📅 ជ្រើសរើសកាលបរិច្ឆេទទាញយក",
+            f"តើអ្នកចង់ទាញយកទិន្នន័យពី Cloud រយៈពេលណា?\n\n"
+            f"ថ្ងៃនេះ: {today_str}",
+            period_options,
+            2,
+            "ទាញយក",
+            "បោះបង់",
+            (460, 190),
+        )
+        if not ok:
             return None, "", False
 
-        choice = dialog.textValue()
         start_date = None
         end_date = None
         period_label = choice
@@ -2442,114 +2545,21 @@ class LoginDialog(BaseDialog):
 
     def _get_upload_period_choice(self, today_str):
         """Show a styled selection dialog for upload period."""
-        period_options = [
-            "📅 ថ្ងៃនេះ (Today Only)",
-            "📆 សប្តាហ៍នេះ (This Week)",
-            "🗓️ ខែនេះ (This Month)",
-            "📋 ខែមុន (Last Month)",
-            "⚙️ កំណត់ដោយខ្លួនឯង (Custom Range)",
-            "📦 ទាំងអស់ (Full Database)",
-        ]
-
-        dialog = QInputDialog(self)
-        dialog.setWindowTitle("📅 ជ្រើសរើសរយៈពេល Upload")
-        dialog.setLabelText(
+        period_options = cloud_sync_period_options()
+        return self._exec_period_choice_dialog(
+            "📅 ជ្រើសរើសរយៈពេល Upload",
             f"តើអ្នកចង់ Upload របាយការណ៍បែបណា?\n\n"
-            f"📊 ថ្ងៃនេះ: {today_str}"
+            f"📊 ថ្ងៃនេះ: {today_str}",
+            period_options,
+            0,
+            "OK",
+            "Cancel",
+            (430, 180),
         )
-        dialog.setComboBoxItems(period_options)
-        dialog.setComboBoxEditable(False)
-        dialog.setTextValue(period_options[0])
-        dialog.setOkButtonText("OK")
-        dialog.setCancelButtonText("Cancel")
-        dialog.resize(430, 180)
-        dialog.setStyleSheet("""
-            QInputDialog {
-                background-color: #2c3e50;
-            }
-            QLabel {
-                color: #f5f6fa;
-                font-size: 12px;
-                background: transparent;
-            }
-            QComboBox {
-                background-color: #f5f6fa;
-                color: #000000;
-                border: 1px solid #95a5a6;
-                border-radius: 4px;
-                padding: 6px 8px;
-                min-height: 30px;
-                selection-background-color: #dfe6e9;
-                selection-color: #000000;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #ffffff;
-                color: #000000;
-                selection-background-color: #74b9ff;
-                selection-color: #000000;
-                border: 1px solid #95a5a6;
-            }
-            QPushButton {
-                background-color: #f5f6fa;
-                color: #000000;
-                border: 1px solid #74b9ff;
-                padding: 6px 18px;
-                min-width: 90px;
-            }
-            QPushButton:hover {
-                background-color: #dfe6e9;
-            }
-        """)
-
-        ok = dialog.exec_() == QDialog.Accepted
-        return dialog.textValue(), ok
 
     def _get_upload_note_input(self, period_label):
         """Show a styled multiline input dialog for optional upload notes."""
-        dialog = QInputDialog(self)
-        dialog.setInputMode(QInputDialog.TextInput)
-        dialog.setOption(QInputDialog.UsePlainTextEditForTextInput, True)
-        dialog.setWindowTitle("📝 ការកត់សម្គាល់ (ស្រេចចិត្ត)")
-        dialog.setLabelText(
-            f"តើអ្នកចង់បន្ថែមការកត់សម្គាល់សម្រាប់ {period_label}?\n\n"
-            f"(ឧ. ការងារច្រើន, មានអ្នកជំងឺច្រើន, ខ្វះបុគ្គលិក, ល.ល.)"
-        )
-        dialog.setTextValue("")
-        dialog.setOkButtonText("OK")
-        dialog.setCancelButtonText("Cancel")
-        dialog.resize(520, 360)
-        dialog.setStyleSheet("""
-            QInputDialog {
-                background-color: #2c3e50;
-            }
-            QLabel {
-                color: #f5f6fa;
-                font-size: 12px;
-                background: transparent;
-            }
-            QTextEdit {
-                background-color: #f5f6fa;
-                color: #000000;
-                border: 1px solid #3498db;
-                border-radius: 4px;
-                padding: 8px;
-                selection-background-color: #74b9ff;
-                selection-color: #000000;
-            }
-            QPushButton {
-                background-color: #f5f6fa;
-                color: #000000;
-                border: 1px solid #74b9ff;
-                padding: 6px 18px;
-                min-width: 90px;
-            }
-            QPushButton:hover {
-                background-color: #dfe6e9;
-            }
-        """)
-
-        ok = dialog.exec_() == QDialog.Accepted
-        return dialog.textValue(), ok
+        return self._exec_configured_input_dialog("ការកត់សម្គាល់ (ស្រេចចិត្ត)", f"តើអ្នកចង់បន្ថែមការកត់សម្គាល់សម្រាប់ {period_label}?\n\nឧ. ការងារច្រើន, មានអ្នកជំងឺច្រើន, ខ្វះបុគ្គលិក", text_value="", ok_text="OK", cancel_text="Cancel", size=(520, 360), multiline=True)
 
     def _preflight_cloud_sync_url(self, url):
         """Lightweight validation before downloading the database file."""
@@ -2622,30 +2632,6 @@ class LoginDialog(BaseDialog):
         except Exception:
             return False
 
-    def _merge_databases(self, source_db_path):
-        """
-        Merge patient data from a source database into the current database.
-
-        Returns:
-            tuple: (merged_count, skipped_count)
-        """
-        try:
-            with sqlite3.connect(source_db_path) as source_conn:
-                source_cur = source_conn.cursor()
-                source_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='patient'")
-                if not source_cur.fetchone():
-                    return 0, 0
-
-                source_cur.execute("PRAGMA table_info(patient)")
-                columns = [row[1] for row in source_cur.fetchall()]
-                source_cur.execute("SELECT * FROM patient")
-                source_patients = source_cur.fetchall()
-
-            return db.merge_patients(source_patients, columns)
-        except Exception as e:
-            db.logger.error(f"Merge error: {e}")
-            raise
-
     def check_login(self):
         if db.check_user(self.user.text().strip(), self.pwd.text().strip()):
             db.log_login(self.user.text().strip()) # Log the successful login
@@ -2668,7 +2654,7 @@ class TelegramShareDialog(BaseDialog):
         self.telegram_contact = ""
         
         # Get Khmer-compatible font
-        self.khmer_font = self._get_khmer_font()
+        self.khmer_font = get_khmer_font()
         
         layout = self.content_layout
         layout.setContentsMargins(25, 15, 25, 15)
@@ -2880,26 +2866,6 @@ class TelegramShareDialog(BaseDialog):
 
         layout.addStretch()
 
-    def _get_khmer_font(self):
-        """Get the best available Khmer-compatible font"""
-        font_db = QFontDatabase()
-        font_families = font_db.families()
-        
-        khmer_fonts = [
-            "Khmer OS Battambang",
-            "Khmer OS Siemreap",
-            "Khmer OS",
-            "Leelawadee UI",
-            "Noto Sans Khmer",
-            "Segoe UI"
-        ]
-        
-        for font_name in khmer_fonts:
-            if font_name in font_families:
-                return font_name
-        
-        return "Segoe UI"
-
     def select_type(self, share_type):
         self.share_type = share_type
         self.telegram_contact = self.telegram_input.text().strip()
@@ -3039,7 +3005,7 @@ class SettingsDialog(QDialog):
 
         font_layout = QHBoxLayout()
         font_layout.addWidget(QLabel("🔤 ជ្រើសរើស Font Khmer សម្រាប់កម្មវិធីទាំងមូល:"))
-        self.font_combo.addItems(self._available_khmer_fonts())
+        self.font_combo.addItems(available_khmer_fonts())
         self.font_combo.setCurrentText(self.config.get('CATEGORIES', 'khmer_font', fallback="Khmer OS Battambang"))
         font_layout.addWidget(self.font_combo)
         layout.addLayout(font_layout)
@@ -3106,20 +3072,6 @@ class SettingsDialog(QDialog):
         
         self.accept()
 
-    def _available_khmer_fonts(self):
-        font_families = QFontDatabase().families()
-        preferred = [
-            "Khmer OS Battambang",
-            "Khmer OS Siemreap",
-            "Khmer OS",
-            "Khmer UI",
-            "Noto Sans Khmer",
-            "Leelawadee UI",
-            "Segoe UI",
-        ]
-        available = [font for font in preferred if font in font_families]
-        return available or ["Segoe UI"]
-
 class App(QWidget):
     def __init__(self, username):
         super().__init__()
@@ -3141,17 +3093,7 @@ class App(QWidget):
         self.settings_file = os.path.join(self.base_dir, 'settings.ini')
         self._load_or_create_settings()
 
-        self.CAT_AGE = self._get_setting('age')
-        self.CAT_SEX = self._get_setting('sex')
-        self.CAT_AREA = self._get_setting('area')
-        self.CAT_DISEASE = self._get_setting('disease')
-        self.CAT_IMCI = self._get_setting('imci')
-        self.CAT_NUTRITION = self._get_setting('nutrition')
-        self.CAT_SERVICE = self._get_setting('service')
-        self.CAT_DIAGNOSIS = self._get_setting('diagnosis')
-        self.CAT_MEDICINE = self._get_setting('medicine')
-        self.current_theme = self.config.get('CATEGORIES', 'theme', fallback="Modern Dark")
-        self.current_font = self._get_configured_font()
+        self._reload_category_settings()
 
         # Set backup directory to AppData to avoid permission issues
         import ctypes.wintypes
@@ -3277,6 +3219,19 @@ class App(QWidget):
         app_inst = QApplication.instance()
         if isinstance(app_inst, QApplication):
             app_inst.focusChanged.connect(self._on_focus_changed)
+
+    def _reload_category_settings(self):
+        self.CAT_AGE = self._get_setting('age')
+        self.CAT_SEX = self._get_setting('sex')
+        self.CAT_AREA = self._get_setting('area')
+        self.CAT_DISEASE = self._get_setting('disease')
+        self.CAT_IMCI = self._get_setting('imci')
+        self.CAT_NUTRITION = self._get_setting('nutrition')
+        self.CAT_SERVICE = self._get_setting('service')
+        self.CAT_DIAGNOSIS = self._get_setting('diagnosis')
+        self.CAT_MEDICINE = self._get_setting('medicine')
+        self.current_theme = self.config.get('CATEGORIES', 'theme', fallback="Modern Dark")
+        self.current_font = self._get_configured_font()
 
     def _configure_window_for_screen(self):
         """Size the main window to the usable screen area on high-DPI laptops."""
@@ -4256,9 +4211,10 @@ class App(QWidget):
         area_layout = QHBoxLayout(self.area_container)
         area_layout.setContentsMargins(0,0,0,0)
 
-        # Editable QComboBox with autocomplete for Area
+        # Fixed QComboBox for Area: only the configured choices are allowed.
         self.area_cat = QComboBox()
-        self.area_cat.setEditable(True)  # Allow typing
+        self.area_cat.setEditable(False)
+        self.area_cat.setInsertPolicy(QComboBox.NoInsert)
         self.area_cat.setStyleSheet("background-color: #353b48; color: #d2dae2; font-weight: bold; padding: 5px;")
 
         self.area_val = QLineEdit()
@@ -4270,7 +4226,7 @@ class App(QWidget):
         area_layout.addWidget(self.area_cat)
         area_layout.addWidget(self.area_val)
 
-        # Auto-generate Area counter when category is selected/typed
+        # Auto-generate Area counter when category is selected
         self.area_cat.currentTextChanged.connect(self.update_area_serial)
 
         # Populate Area categories, starting with a blank selection.
@@ -4600,18 +4556,7 @@ class App(QWidget):
             print(f"'{self.settings_file}' not found. Creating with default values.")
             self.config['CATEGORIES'] = default_categories.copy()
             # Use AppData for writable settings to avoid Program Files permission issues
-            try:
-                import ctypes.wintypes
-                CSIDL_LOCAL_APPDATA = 28
-                SHGFP_TYPE_CURRENT = 0
-                buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-                ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_LOCAL_APPDATA, None, SHGFP_TYPE_CURRENT, buf)
-                appdata_dir = os.path.join(buf.value, 'ClinicManager')
-                if not os.path.exists(appdata_dir):
-                    os.makedirs(appdata_dir)
-                writable_settings_file = os.path.join(appdata_dir, 'settings.ini')
-            except Exception:
-                writable_settings_file = self.settings_file
+            writable_settings_file = get_writable_settings_file(os.path.dirname(self.settings_file))
             
             with open(writable_settings_file, 'w', encoding='utf-8') as configfile:
                 self.config.write(configfile)
@@ -4653,18 +4598,7 @@ class App(QWidget):
 
         if updated:
             # Use AppData for writable settings
-            try:
-                import ctypes.wintypes
-                CSIDL_LOCAL_APPDATA = 28
-                SHGFP_TYPE_CURRENT = 0
-                buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-                ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_LOCAL_APPDATA, None, SHGFP_TYPE_CURRENT, buf)
-                appdata_dir = os.path.join(buf.value, 'ClinicManager')
-                if not os.path.exists(appdata_dir):
-                    os.makedirs(appdata_dir)
-                writable_settings_file = os.path.join(appdata_dir, 'settings.ini')
-            except Exception:
-                writable_settings_file = self.settings_file
+            writable_settings_file = get_writable_settings_file(os.path.dirname(self.settings_file))
             
             with open(writable_settings_file, 'w', encoding='utf-8') as configfile:
                 self.config.write(configfile)
@@ -4678,22 +4612,9 @@ class App(QWidget):
         except (configparser.NoSectionError, configparser.NoOptionError):
             return [] # Return an empty list if the key or section is missing
 
-    def _available_khmer_fonts(self):
-        font_families = QFontDatabase().families()
-        preferred = [
-            "Khmer OS Battambang",
-            "Khmer OS Siemreap",
-            "Khmer OS",
-            "Khmer UI",
-            "Noto Sans Khmer",
-            "Leelawadee UI",
-            "Segoe UI",
-        ]
-        return [font for font in preferred if font in font_families] or ["Segoe UI"]
-
     def _get_configured_font(self):
         configured = self.config.get('CATEGORIES', 'khmer_font', fallback='Khmer OS Battambang').strip()
-        available = self._available_khmer_fonts()
+        available = available_khmer_fonts()
         return configured if configured in available else available[0]
 
     def apply_app_font(self, font_name=None):
@@ -4932,7 +4853,11 @@ class App(QWidget):
 
         # ៦. តំបន់ទទួលខុសត្រូវ (Area)
         if not self.area_cat.currentText().strip():
-            QMessageBox.warning(self, "Missing Information", "សូមបញ្ចូលតំបន់ទទួលខុសត្រូវ!")
+            QMessageBox.warning(self, "Missing Information", "សូមជ្រើសរើសតំបន់ទទួលខុសត្រូវ!")
+            self.area_cat.setFocus()
+            return False
+        if self.CAT_AREA and self.area_cat.currentText().strip() not in self.CAT_AREA:
+            QMessageBox.warning(self, "Invalid Area", "សូមជ្រើសរើសតំបន់ត្រឹមត្រូវពីបញ្ជី: ក, ខ, គ")
             self.area_cat.setFocus()
             return False
 
@@ -5030,6 +4955,8 @@ class App(QWidget):
         if not self.sex.currentText().strip():
             return False
         if not self.area_cat.currentText().strip():
+            return False
+        if self.CAT_AREA and self.area_cat.currentText().strip() not in self.CAT_AREA:
             return False
         if not self.address.text().strip():
             return False
@@ -5203,7 +5130,6 @@ class App(QWidget):
             self.guardian: (db.PatientCol.GUARDIAN, False),
             self.age_cat: (db.PatientCol.AGE, True),
             self.sex: (db.PatientCol.SEX, False),
-            self.area_cat: (db.PatientCol.AREA, True),
             self.address: (db.PatientCol.ADDRESS, False),
             self.ref_from: (db.PatientCol.REF_FROM, False),
             self.disease_cat: (db.PatientCol.DISEASE, True),
@@ -5223,7 +5149,6 @@ class App(QWidget):
         defaults = {
             self.age_cat: self.CAT_AGE,
             self.sex: self.CAT_SEX,
-            self.area_cat: self.CAT_AREA,
             self.disease_cat: self.CAT_DISEASE,
             self.service: self.CAT_SERVICE,
             self.treatment: self.CAT_MEDICINE
@@ -5583,6 +5508,62 @@ class App(QWidget):
                 "គ្មានទិន្នន័យរោគវិនិច្ឆ័យសម្រាប់ករណីថ្មី"
             )
 
+
+            def build_area_new_rows_html():
+                rows = []
+                area_rows = [
+                    ("តំបន់ ក", "area_a", area_a_total, area_a_new_m, area_a_new_f, area_a_pct, row_normal, row_alt, row_normal),
+                    ("តំបន់ ខ", "area_b", area_b_total, area_b_new_m, area_b_new_f, area_b_pct, row_alt, row_normal, row_alt),
+                    ("តំបន់ គ", "area_c", area_c_total, area_c_new_m, area_c_new_f, area_c_pct, row_normal, row_alt, row_normal),
+                ]
+                for label, key, total, male, female, pct, total_bg, child_bg, adult_bg in area_rows:
+                    rows.append(f"""
+                <tr bgcolor='{total_bg}'>
+                    <td>{label}</td>
+                    <td style='text-align: center; color: {row_text};'>{total}</td>
+                    <td style='text-align: center; color: {row_text};'>{male}</td>
+                    <td style='text-align: center; color: {row_text};'>{female}</td>
+                    <td style='text-align: center; color: {row_text};'>{pct}%</td>
+                </tr>
+                <tr bgcolor='{child_bg}'>
+                    <td style='padding-left: 20px;'>↳ កុមារ</td>
+                    <td style='text-align: center; color: {row_text};'>{c[f'{key}_new']}</td>
+                    <td style='text-align: center; color: {row_text};'>{c[f'{key}_new_m']}</td>
+                    <td style='text-align: center; color: {row_text};'>{c[f'{key}_new_f']}</td>
+                    <td style='text-align: center; color: {row_text};'>{calc_pct(c[f'{key}_new'], new_total)}%</td>
+                </tr>
+                <tr bgcolor='{adult_bg}'>
+                    <td style='padding-left: 20px;'>↳ មនុស្សចាស់</td>
+                    <td style='text-align: center; color: {row_text};'>{a[f'{key}_new']}</td>
+                    <td style='text-align: center; color: {row_text};'>{a[f'{key}_new_m']}</td>
+                    <td style='text-align: center; color: {row_text};'>{a[f'{key}_new_f']}</td>
+                    <td style='text-align: center; color: {row_text};'>{calc_pct(a[f'{key}_new'], new_total)}%</td>
+                </tr>
+                    """)
+                return "".join(rows)
+
+            def build_area_total_rows_html():
+                rows = []
+                area_rows = [
+                    ("តំបន់ ក (សរុប)", area_a_all_m, area_a_all_f, row_normal),
+                    ("តំបន់ ខ (សរុប)", area_b_all_m, area_b_all_f, row_alt),
+                    ("តំបន់ គ (សរុប)", area_c_all_m, area_c_all_f, row_normal),
+                ]
+                for label, male, female, bg in area_rows:
+                    total = male + female
+                    rows.append(f"""
+                <tr bgcolor='{bg}'>
+                    <td>{label}</td>
+                    <td style='text-align: center; color: {row_text};'>{total}</td>
+                    <td style='text-align: center; color: {row_text};'>{male}</td>
+                    <td style='text-align: center; color: {row_text};'>{female}</td>
+                    <td style='text-align: center; color: {row_text};'>{calc_pct(total, total_patients)}%</td>
+                </tr>
+                    """)
+                return "".join(rows)
+
+            area_new_rows_html = build_area_new_rows_html()
+            area_total_rows_html = build_area_total_rows_html()
             msg = f"""
             <html>
             <body style='background-color: {table_bg}; color: {row_text}; font-family: "{self.current_font}", Arial, sans-serif;'>
@@ -5632,69 +5613,7 @@ class App(QWidget):
                 <tr bgcolor='{section_bg}'>
                     <td colspan='5' style='color: {section_text};'><b>📍 តាមតំបន់ (ករណីថ្មី)</b></td>
                 </tr>
-                <tr bgcolor='{row_normal}'>
-                    <td>តំបន់ ក</td>
-                    <td style='text-align: center; color: {row_text};'>{area_a_total}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_a_new_m}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_a_new_f}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_a_pct}%</td>
-                </tr>
-                <tr bgcolor='{row_alt}'>
-                    <td style='padding-left: 20px;'>↳ កុមារ</td>
-                    <td style='text-align: center; color: {row_text};'>{c['area_a_new']}</td>
-                    <td style='text-align: center; color: {row_text};'>{c['area_a_new_m']}</td>
-                    <td style='text-align: center; color: {row_text};'>{c['area_a_new_f']}</td>
-                    <td style='text-align: center; color: {row_text};'>{calc_pct(c['area_a_new'], new_total)}%</td>
-                </tr>
-                <tr bgcolor='{row_normal}'>
-                    <td style='padding-left: 20px;'>↳ មនុស្សចាស់</td>
-                    <td style='text-align: center; color: {row_text};'>{a['area_a_new']}</td>
-                    <td style='text-align: center; color: {row_text};'>{a['area_a_new_m']}</td>
-                    <td style='text-align: center; color: {row_text};'>{a['area_a_new_f']}</td>
-                    <td style='text-align: center; color: {row_text};'>{calc_pct(a['area_a_new'], new_total)}%</td>
-                </tr>
-                <tr bgcolor='{row_alt}'>
-                    <td>តំបន់ ខ</td>
-                    <td style='text-align: center; color: {row_text};'>{area_b_total}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_b_new_m}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_b_new_f}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_b_pct}%</td>
-                </tr>
-                <tr bgcolor='{row_normal}'>
-                    <td style='padding-left: 20px;'>↳ កុមារ</td>
-                    <td style='text-align: center; color: {row_text};'>{c['area_b_new']}</td>
-                    <td style='text-align: center; color: {row_text};'>{c['area_b_new_m']}</td>
-                    <td style='text-align: center; color: {row_text};'>{c['area_b_new_f']}</td>
-                    <td style='text-align: center; color: {row_text};'>{calc_pct(c['area_b_new'], new_total)}%</td>
-                </tr>
-                <tr bgcolor='{row_alt}'>
-                    <td style='padding-left: 20px;'>↳ មនុស្សចាស់</td>
-                    <td style='text-align: center; color: {row_text};'>{a['area_b_new']}</td>
-                    <td style='text-align: center; color: {row_text};'>{a['area_b_new_m']}</td>
-                    <td style='text-align: center; color: {row_text};'>{a['area_b_new_f']}</td>
-                    <td style='text-align: center; color: {row_text};'>{calc_pct(a['area_b_new'], new_total)}%</td>
-                </tr>
-                <tr bgcolor='{row_normal}'>
-                    <td>តំបន់ គ</td>
-                    <td style='text-align: center; color: {row_text};'>{area_c_total}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_c_new_m}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_c_new_f}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_c_pct}%</td>
-                </tr>
-                <tr bgcolor='{row_alt}'>
-                    <td style='padding-left: 20px;'>↳ កុមារ</td>
-                    <td style='text-align: center; color: {row_text};'>{c['area_c_new']}</td>
-                    <td style='text-align: center; color: {row_text};'>{c['area_c_new_m']}</td>
-                    <td style='text-align: center; color: {row_text};'>{c['area_c_new_f']}</td>
-                    <td style='text-align: center; color: {row_text};'>{calc_pct(c['area_c_new'], new_total)}%</td>
-                </tr>
-                <tr bgcolor='{row_normal}'>
-                    <td style='padding-left: 20px;'>↳ មនុស្សចាស់</td>
-                    <td style='text-align: center; color: {row_text};'>{a['area_c_new']}</td>
-                    <td style='text-align: center; color: {row_text};'>{a['area_c_new_m']}</td>
-                    <td style='text-align: center; color: {row_text};'>{a['area_c_new_f']}</td>
-                    <td style='text-align: center; color: {row_text};'>{calc_pct(a['area_c_new'], new_total)}%</td>
-                </tr>
+                {area_new_rows_html}
                 <tr bgcolor='{comparison_header}'>
                     <td style='color: {header_text};'><b>ករណីថ្មីសរុប</b></td>
                     <td style='text-align: center; color: {header_text};'><b>{new_total}</b></td>
@@ -5705,27 +5624,7 @@ class App(QWidget):
                 <tr bgcolor='{section_bg}'>
                     <td colspan='5' style='color: {section_text};'><b>📍 សរុបតាមតំបន់ (ករណីថ្មី + ចាស់)</b></td>
                 </tr>
-                <tr bgcolor='{row_normal}'>
-                    <td>តំបន់ ក (សរុប)</td>
-                    <td style='text-align: center; color: {row_text};'>{area_a_all_m + area_a_all_f}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_a_all_m}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_a_all_f}</td>
-                    <td style='text-align: center; color: {row_text};'>{calc_pct(area_a_all_m + area_a_all_f, total_patients)}%</td>
-                </tr>
-                <tr bgcolor='{row_alt}'>
-                    <td>តំបន់ ខ (សរុប)</td>
-                    <td style='text-align: center; color: {row_text};'>{area_b_all_m + area_b_all_f}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_b_all_m}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_b_all_f}</td>
-                    <td style='text-align: center; color: {row_text};'>{calc_pct(area_b_all_m + area_b_all_f, total_patients)}%</td>
-                </tr>
-                <tr bgcolor='{row_normal}'>
-                    <td>តំបន់ គ (សរុប)</td>
-                    <td style='text-align: center; color: {row_text};'>{area_c_all_m + area_c_all_f}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_c_all_m}</td>
-                    <td style='text-align: center; color: {row_text};'>{area_c_all_f}</td>
-                    <td style='text-align: center; color: {row_text};'>{calc_pct(area_c_all_m + area_c_all_f, total_patients)}%</td>
-                </tr>
+                {area_total_rows_html}
                 <tr bgcolor='{comparison_header}'>
                     <td style='color: {header_text};'><b>ករណីសរុបទាំងអស់</b></td>
                     <td style='text-align: center; color: {header_text};'><b>{total_patients}</b></td>
@@ -5990,18 +5889,7 @@ class App(QWidget):
             with open(self.settings_file, 'w', encoding='utf-8') as configfile:
                 self.config.write(configfile)
             
-            # Reload categories in memory
-            self.CAT_AGE = self._get_setting('age')
-            self.CAT_SEX = self._get_setting('sex')
-            self.CAT_AREA = self._get_setting('area')
-            self.CAT_DISEASE = self._get_setting('disease')
-            self.CAT_IMCI = self._get_setting('imci')
-            self.CAT_NUTRITION = self._get_setting('nutrition')
-            self.CAT_SERVICE = self._get_setting('service')
-            self.CAT_DIAGNOSIS = self._get_setting('diagnosis')
-            self.CAT_MEDICINE = self._get_setting('medicine')
-            self.current_theme = self.config.get('CATEGORIES', 'theme', fallback="Modern Dark")
-            self.current_font = self._get_configured_font()
+            self._reload_category_settings()
             self.apply_app_font(self.current_font)
 
             # Refresh entry dropdowns with blank first selections
@@ -6239,61 +6127,30 @@ class App(QWidget):
         if not self.analytics_data:
             QMessageBox.warning(self, "Warning", "សូមបង្កើតរបាយការណ៍វិភាគជាមុនសិន!")
             return
-        
+
         try:
-            from openpyxl import Workbook
-            from openpyxl.styles import Font, Alignment, PatternFill
-            
-            wb = Workbook()
-            ws = wb.active  # type: ignore
-            ws.title = "Analytics Report"  # type: ignore
-            
-            # Set column widths
-            ws.column_dimensions['A'].width = 25  # type: ignore
-            ws.column_dimensions['B'].width = 15  # type: ignore
-            ws.column_dimensions['C'].width = 15  # type: ignore
-            ws.column_dimensions['D'].width = 15  # type: ignore
-            ws.column_dimensions['E'].width = 15  # type: ignore
-            
-            # Colors
-            header_fill = PatternFill(start_color="FF00CEC9", end_color="FF00CEC9", fill_type="solid")
-            header_font = Font(bold=True, color="FFFFFFFF", size=12)
-            center_align = Alignment(horizontal="center", vertical="center")  # type: ignore
-            
-            # Title
-            ws.merge_cells('A1:E1')  # type: ignore
-            ws['A1'] = "📊 របាយការណ៍វិភាគ (Analytics Report)"  # type: ignore
-            ws['A1'].font = Font(bold=True, size=16, color="FF00CEC9")  # type: ignore
-            
-            # Headers
+            wb, ws, styles = setup_excel_report_workbook(
+                "Analytics Report",
+                "📊 របាយការណ៍វិភាគ (Analytics Report)",
+                "FF00CEC9",
+                "FF00CEC9",
+                {"A": 25, "B": 15, "C": 15, "D": 15, "E": 15},
+            )
             row = 3
-            headers = ["ក្រុម (Group)", "ចំនួនសរុប", "ប្រុស", "ស្រី", "ភាគរយ"]
-            for col, header in enumerate(headers, 1):
-                cell = ws.cell(row=row, column=col, value=header)  # type: ignore
-                cell.fill = header_fill  # type: ignore
-                cell.font = header_font  # type: ignore
-                cell.alignment = center_align  # type: ignore
-            
-            # Data
+            add_excel_headers(ws, row, ["ក្រុម (Group)", "ចំនួនសរុប", "ប្រុស", "ស្រី", "ភាគរយ"], styles)
             row += 1
             for item in self.analytics_data:
-                ws.cell(row=row, column=1, value=item['group']).alignment = center_align  # type: ignore
-                ws.cell(row=row, column=2, value=item['total']).alignment = center_align  # type: ignore
-                ws.cell(row=row, column=3, value=item['male']).alignment = center_align  # type: ignore
-                ws.cell(row=row, column=4, value=item['female']).alignment = center_align  # type: ignore
-                ws.cell(row=row, column=5, value=f"{item['percentage']}%").alignment = center_align  # type: ignore
+                ws.cell(row=row, column=1, value=item['group']).alignment = styles["center_align"]  # type: ignore
+                ws.cell(row=row, column=2, value=item['total']).alignment = styles["center_align"]  # type: ignore
+                ws.cell(row=row, column=3, value=item['male']).alignment = styles["center_align"]  # type: ignore
+                ws.cell(row=row, column=4, value=item['female']).alignment = styles["center_align"]  # type: ignore
+                ws.cell(row=row, column=5, value=f"{item['percentage']}%").alignment = styles["center_align"]  # type: ignore
                 row += 1
-            
-            # Save file
+
             from datetime import datetime
             filename = f"Analytics_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-            file_path, _ = QFileDialog.getSaveFileName(self, "Save Analytics Excel", filename, "Excel Files (*.xlsx)")
-            
-            if file_path:
-                wb.save(file_path)
-                self.statusBar.showMessage(f"បាននាំចេញទៅកាន់ {os.path.basename(file_path)}", 5000)
-                QMessageBox.information(self, "ជោគជ័យ", f"បាននាំចេញរបាយការណ៍វិភាគទៅ Excel ជោគជ័យ!\n\n{os.path.basename(file_path)}")
-                
+            save_excel_report(self, wb, filename, "Save Analytics Excel", "បាននាំចេញរបាយការណ៍វិភាគទៅ Excel ជោគជ័យ!")
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"ការនាំចេញបរាជ័យ: {str(e)}")
 
@@ -6535,56 +6392,27 @@ class App(QWidget):
     def export_statistics_to_excel(self):
         """Export statistics report to Excel"""
         try:
-            from openpyxl import Workbook
-            from openpyxl.styles import Font, Alignment, PatternFill
-
-            # Create workbook
-            wb = Workbook()
-            ws = wb.active  # type: ignore
-            ws.title = "Statistics Report"  # type: ignore
-
-            # Set column widths
-            ws.column_dimensions['A'].width = 35  # type: ignore
-            ws.column_dimensions['B'].width = 15  # type: ignore
-            ws.column_dimensions['C'].width = 15  # type: ignore
-            ws.column_dimensions['D'].width = 15  # type: ignore
-            ws.column_dimensions['E'].width = 15  # type: ignore
-
-            # Colors
-            header_fill = PatternFill(start_color="FFE74C3C", end_color="FFE74C3C", fill_type="solid")
-            section_fill = PatternFill(start_color="FFD5F5E3", end_color="FFD5F5E3", fill_type="solid")
-            header_font = Font(bold=True, color="FFFFFFFF", size=12)
-            center_align = Alignment(horizontal="center", vertical="center")
-
-            # Get statistics
+            wb, ws, styles = setup_excel_report_workbook(
+                "Statistics Report",
+                "📊 របាយការណ៍ស្ថិតិអ្នកជំងឺ (Detailed Statistics)",
+                "FF0FBCF9",
+                "FFE74C3C",
+                {"A": 35, "B": 15, "C": 15, "D": 15, "E": 15},
+            )
             s = db.get_statistics()
             c = s['child']
             a = s['adult']
             o = s['overall']
 
-            # Title
-            ws.merge_cells('A1:E1')  # type: ignore
-            ws['A1'] = "📊 របាយការណ៍ស្ថិតិអ្នកជំងឺ (Detailed Statistics)"  # type: ignore
-            ws['A1'].font = Font(bold=True, size=16, color="FF0FBCF9")  # type: ignore
-            ws['A1'].alignment = center_align  # type: ignore
-
-            # Overall Statistics
             row = 3
             ws.merge_cells(f'A{row}:E{row}')  # type: ignore
             ws[f'A{row}'] = "🔵 ផ្នែកទី ១: ស្ថិតិសរុបទាំងអស់ (Overall Total)"  # type: ignore
-            ws[f'A{row}'].font = Font(bold=True, size=12, color="FFC0392B")  # type: ignore
-            ws[f'A{row}'].fill = section_fill  # type: ignore
+            ws[f'A{row}'].font = styles["section_font"]  # type: ignore
+            ws[f'A{row}'].fill = styles["section_fill"]  # type: ignore
 
-            # Headers
             row += 1
-            headers = ["ពិពណ៌នា", "សរុប", "ប្រុស", "ស្រី", "ភាគរយ"]
-            for col, header in enumerate(headers, 1):
-                cell = ws.cell(row=row, column=col, value=header)  # type: ignore
-                cell.fill = header_fill  # type: ignore
-                cell.font = header_font  # type: ignore
-                cell.alignment = center_align  # type: ignore
+            add_excel_headers(ws, row, ["ពិពណ៌នា", "សរុប", "ប្រុស", "ស្រី", "ភាគរយ"], styles)
 
-            # Data
             row += 1
             data = [
                 ["អ្នកជំងឺសរុប", o['total'], o['male'], o['female'], "100%"],
@@ -6595,19 +6423,13 @@ class App(QWidget):
 
             for item in data:
                 for col, value in enumerate(item, 1):
-                    ws.cell(row=row, column=col, value=value).alignment = center_align  # type: ignore
+                    ws.cell(row=row, column=col, value=value).alignment = styles["center_align"]  # type: ignore
                 row += 1
-            
-            # Save file
+
             from datetime import datetime
             filename = f"Statistics_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-            file_path, _ = QFileDialog.getSaveFileName(self, "Save Statistics Excel", filename, "Excel Files (*.xlsx)")
-            
-            if file_path:
-                wb.save(file_path)
-                self.statusBar.showMessage(f"បាននាំចេញទៅកាន់ {os.path.basename(file_path)}", 5000)
-                QMessageBox.information(self, "ជោគជ័យ", f"បាននាំចេញរបាយការណ៍ស្ថិតិទៅ Excel ជោគជ័យ!\n\n{os.path.basename(file_path)}")
-                
+            save_excel_report(self, wb, filename, "Save Statistics Excel", "បាននាំចេញរបាយការណ៍ស្ថិតិទៅ Excel ជោគជ័យ!")
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"ការនាំចេញបរាជ័យ: {str(e)}")
 
@@ -6777,32 +6599,6 @@ class App(QWidget):
     def import_excel(self):
         excel_handler.import_excel(self)
 
-    def _merge_databases(self, source_db_path):
-        """
-        Merge patient data from a source database into the current database.
-
-        Returns:
-            tuple: (merged_count, skipped_count)
-        """
-        try:
-            import sqlite3
-
-            with sqlite3.connect(source_db_path) as source_conn:
-                source_cur = source_conn.cursor()
-                source_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='patient'")
-                if not source_cur.fetchone():
-                    return 0, 0
-
-                source_cur.execute("PRAGMA table_info(patient)")
-                columns = [row[1] for row in source_cur.fetchall()]
-                source_cur.execute("SELECT * FROM patient")
-                source_patients = source_cur.fetchall()
-
-            return db.merge_patients(source_patients, columns)
-        except Exception as e:
-            db.logger.error(f"Merge error: {e}")
-            raise
-
     def merge_database(self):
         # 1. Choose an external SQLite database file
         file_path, _ = QFileDialog.getOpenFileName(self, "Select Database to Merge", "", "SQLite Files (*.db)")
@@ -6814,7 +6610,7 @@ class App(QWidget):
             return
 
         try:
-            added_count, skipped_count = self._merge_databases(file_path)
+            added_count, skipped_count = db.merge_database_file(file_path)
             self.view()
             self.update_next_serial_no()
             self.statusBar.showMessage(
@@ -6884,32 +6680,7 @@ class App(QWidget):
         return self.config.get('CATEGORIES', 'telegram_contact', fallback="@Phunsinouen")
 
     def _build_patient_share_database(self, target_db_path, patient_rows):
-        """Create a share-safe database containing only the patient table/data."""
-        with sqlite3.connect(target_db_path) as temp_conn:
-            temp_cur = temp_conn.cursor()
-
-            with sqlite3.connect(db.DB_NAME) as source_conn:
-                source_cur = source_conn.cursor()
-                source_cur.execute(
-                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='patient'"
-                )
-                patient_schema_row = source_cur.fetchone()
-                if not patient_schema_row or not patient_schema_row[0]:
-                    raise Exception("Patient table schema was not found in the source database.")
-
-                temp_cur.execute(patient_schema_row[0])
-                patient_columns = [
-                    row[1] for row in source_cur.execute("PRAGMA table_info(patient)").fetchall()
-                ]
-
-                if patient_rows:
-                    placeholders = ",".join(["?"] * len(patient_columns))
-                    temp_cur.executemany(
-                        f"INSERT INTO patient ({','.join(patient_columns)}) VALUES ({placeholders})",
-                        patient_rows
-                    )
-
-            temp_conn.commit()
+        build_patient_share_database(target_db_path, patient_rows)
 
     def _validate_telegram_contact(self, contact):
         """ផ្ទៀងផ្ទាត់ទម្រង់ Telegram contact"""
@@ -7039,16 +6810,42 @@ class App(QWidget):
                 f"សូមបើកដោយដៃ រួចអូស file ចូល។"
             )
 
-    def share_full_database(self, telegram_contact=None):
-        """ផ្ញើ Database ទាំងមូលទៅ Telegram"""
+    def _get_valid_telegram_contact_or_none(self, telegram_contact):
         if telegram_contact is None:
             telegram_contact = self._get_default_telegram_contact()
-
-        # ផ្ទៀងផ្ទាត់ contact មុននឹងចាប់ផ្តើម
         is_valid, msg = self._validate_telegram_contact(telegram_contact)
         if not is_valid:
             QMessageBox.warning(self, "⚠️ ទម្រង់មិនត្រឹមត្រូវ", msg)
+            return None
+        return telegram_contact
+
+    def _cleanup_temp_file(self, file_path):
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+
+    def _zip_temp_database_for_telegram(self, temp_db_path, zip_filename, archive_name):
+        share_dir = self._get_telegram_share_dir()
+        zip_path = os.path.join(share_dir, zip_filename)
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(temp_db_path, archive_name)
+        file_size = os.path.getsize(zip_path) / (1024 * 1024)
+        return zip_path, file_size
+
+    def _open_prepared_telegram_share(self, zip_path, telegram_contact, instruction_callback):
+        copy_to_clipboard(zip_path)
+        self._open_telegram_url(telegram_contact)
+        QTimer.singleShot(1500, lambda: self._open_file_explorer(zip_path))
+        QTimer.singleShot(1700, instruction_callback)
+
+    def share_full_database(self, telegram_contact=None):
+        """ផ្ញើ Database ទាំងមូលទៅ Telegram"""
+        telegram_contact = self._get_valid_telegram_contact_or_none(telegram_contact)
+        if not telegram_contact:
             return
+
 
         try:
             # បង្កើត temporary file សម្រាប់ copy database
@@ -7067,50 +6864,33 @@ class App(QWidget):
 
                 # បង្កើត ZIP file ក្នុង AppData (មិនមែន Program Files)
                 zip_filename = f"ClinicDB_Full_{timestamp}.zip"
-                share_dir = self._get_telegram_share_dir()
-                zip_path = os.path.join(share_dir, zip_filename)
+                zip_path, file_size = self._zip_temp_database_for_telegram(
+                    temp_db_copy,
+                    zip_filename,
+                    f"ClinicDB_{timestamp}.db",
+                )
 
-                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    zipf.write(temp_db_copy, f"ClinicDB_{timestamp}.db")
-
-                # ទទួលបាន file size
-                file_size = os.path.getsize(zip_path) / (1024 * 1024)
-
-                # បង្ហាញសារជោគជ័យ
-                msg = f"✅ ឯកសារ Database ត្រូវបានគណនារួចរាល់!\n\n"
-                msg += f"📦 ឈ្មោះ: {zip_filename}\n"
-                msg += f"📊 ទំហំ: {file_size:.2f} MB\n\n"
-                msg += f"📂 ទីតាំង: {zip_path}\n\n"
-                msg += f"📤 ផ្ញើទៅ: {telegram_contact}\n\n"
-                msg += f"សូមអនុវត្តតាមជំហានខាងក្រោម:\n"
-                msg += f"1. ចុច OK ដើម្បីបើក Telegram\n"
-                msg += f"2. ស្វែងរក {telegram_contact}\n"
-                msg += f"3. អូស file ចូលក្នុង Telegram\n\n"
-                msg += f"💡 ឬចម្លង file ពី folder ដោយផ្ទាល់។"
+                msg = self._build_telegram_ready_message(
+                    "✅ ឯកសារ Database ត្រូវបានគណនារួចរាល់!",
+                    zip_filename,
+                    file_size,
+                    zip_path,
+                    telegram_contact,
+                )
 
                 reply = QMessageBox.information(self, "✅ Share Complete", msg,
                                                QMessageBox.Ok | QMessageBox.Cancel)
 
                 if reply == QMessageBox.Ok:
-                    # ចម្លង file path ទៅ clipboard
-                    copy_to_clipboard(zip_path)
-
-                    # បើក Telegram (ជាមួយ fallback)
-                    self._open_telegram_url(telegram_contact)
-
-                    # ប្រើ QTimer ជំនួស time.sleep (មិន block UI)
-                    QTimer.singleShot(1500, lambda: self._open_file_explorer(zip_path))
-
-                    # បង្ហាញការណែនាំ
-                    QTimer.singleShot(1700, lambda: self._show_send_instructions(zip_path, file_size, telegram_contact))
+                    self._open_prepared_telegram_share(
+                        zip_path,
+                        telegram_contact,
+                        lambda: self._show_send_instructions(zip_path, file_size, telegram_contact),
+                    )
 
             finally:
                 # សម្អា់ temp file ជានិច្ច
-                if temp_db_copy and os.path.exists(temp_db_copy):
-                    try:
-                        os.remove(temp_db_copy)
-                    except Exception:
-                        pass
+                self._cleanup_temp_file(temp_db_copy)
 
         except PermissionError:
             QMessageBox.critical(self, "❌ កំហុស",
@@ -7119,33 +6899,56 @@ class App(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "❌ កំហុស", f"មិនអាចផ្ញើ Database បានទេ: {str(e)}")
 
-    def _show_send_instructions(self, zip_path, file_size, telegram_contact):
-        """បង្ហាញការណែនាំផ្ញើ file"""
+    def _build_telegram_ready_message(self, heading, zip_filename, file_size, zip_path, telegram_contact, extra_lines=None):
+        lines = [
+            heading,
+            "",
+            *(extra_lines or []),
+            f"📦 ឈ្មោះ: {zip_filename}",
+            f"📊 ទំហំ: {file_size:.2f} MB",
+            "",
+            f"📂 ទីតាំង: {zip_path}",
+            "",
+            f"📤 ផ្ញើទៅ: {telegram_contact}",
+            "",
+            "សូមអនុវត្តតាមជំហានខាងក្រោម:",
+            "1. ចុច OK ដើម្បីបើក Telegram",
+            f"2. ស្វែងរក {telegram_contact}",
+            "3. អូស file ចូលក្នុង Telegram",
+            "",
+            "💡 ឬចម្លង file ពី folder ដោយផ្ទាល់។",
+        ]
+        return "\n".join(lines)
+
+    def _show_telegram_share_instructions(self, title, zip_path, file_size, telegram_contact, extra_lines=None):
         instructions = QMessageBox(self)
         instructions.setIcon(QMessageBox.Information)
-        instructions.setWindowTitle("📤 ជំហានផ្ញើ File")
+        instructions.setWindowTitle(title)
+        detail_lines = [
+            f"📂 ឈ្មោះ file: {os.path.basename(zip_path)}",
+            f"📊 ទំហំ: {file_size:.2f} MB",
+        ]
+        detail_lines.extend(extra_lines or [])
+        detail_lines.append(f"📤 ផ្ញើទៅ: {telegram_contact}")
         instructions.setText(
             "✅ File path ត្រូវបានចម្លងទៅ Clipboard ហើយ!\n\n"
             "📋 វិធីផ្ញើ៖\n"
             "1. ចុច Ctrl + V ដើម្បី Paste file path ចូល Telegram\n"
             "2. ឬអូស file ពី folder ចូលក្នុង Telegram\n\n"
-            f"📂 ឈ្មោះ file: {os.path.basename(zip_path)}\n"
-            f"📊 ទំហំ: {file_size:.2f} MB\n"
-            f"📤 ផ្ញើទៅ: {telegram_contact}"
+            + "\n".join(detail_lines)
         )
         instructions.addButton("យល់ហើយ 👍", QMessageBox.AcceptRole)
         instructions.exec_()
 
+    def _show_send_instructions(self, zip_path, file_size, telegram_contact):
+        self._show_telegram_share_instructions("📤 ជំហានផ្ញើ File", zip_path, file_size, telegram_contact)
+
     def share_daily_report(self, telegram_contact=None):
         """ផ្ញើរបាយការណ៍ប្រចាំថ្ងៃទៅ Telegram"""
-        if telegram_contact is None:
-            telegram_contact = self._get_default_telegram_contact()
-
-        # ផ្ទៀងផ្ទាត់ contact មុននឹងចាប់ផ្តើម
-        is_valid, msg = self._validate_telegram_contact(telegram_contact)
-        if not is_valid:
-            QMessageBox.warning(self, "⚠️ ទម្រង់មិនត្រឹមត្រូវ", msg)
+        telegram_contact = self._get_valid_telegram_contact_or_none(telegram_contact)
+        if not telegram_contact:
             return
+
 
         try:
             today = datetime.now().strftime("%d/%m/%Y")
@@ -7172,70 +6975,40 @@ class App(QWidget):
 
                 # ចម្លង structure + ទិន្នន័យថ្ងៃនេះ
                 self._build_patient_share_database(temp_db_path, today_patients)
-                """
-
-                    # ចម្លង tables ទាំងអស់
-
-                    for table_name, schema in tables:
-                        if schema:
-                            temp_cur.execute(schema)
-
-                            # ចម្លងទិន្នន័យ (តែ patient ថ្ងៃនេះ)
-                            if table_name == 'patient':
-                                for patient in today_patients:
-                                    placeholders = ','.join(['?' for _ in patient])
-                                    temp_cur.execute(f"INSERT INTO patient VALUES ({placeholders})", patient)
-                            elif table_name != 'sqlite_sequence':
-                                source_cur.execute(f"SELECT * FROM {table_name}")
-                                rows = source_cur.fetchall()
-                                if rows:
-                                    placeholders = ','.join(['?' for _ in rows[0]])
-                                    temp_cur.executemany(f"INSERT INTO {table_name} VALUES ({placeholders})", rows)
-
-                    temp_conn.commit()
-                """
-
                 # បង្កើត ZIP file ក្នុង AppData (មិនមែន Program Files)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M")
                 zip_filename = f"ClinicDB_Daily_{today.replace('/', '')}_{timestamp}.zip"
-                share_dir = self._get_telegram_share_dir()
-                zip_path = os.path.join(share_dir, zip_filename)
+                zip_path, file_size = self._zip_temp_database_for_telegram(
+                    temp_db_path,
+                    zip_filename,
+                    f"ClinicDB_Daily_{today.replace('/', '')}.db",
+                )
 
-                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    zipf.write(temp_db_path, f"ClinicDB_Daily_{today.replace('/', '')}.db")
-
-                file_size = os.path.getsize(zip_path) / (1024 * 1024)
-
-                # សារជោគជ័យ
-                msg = f"✅ របាយការណ៍ប្រចាំថ្ងៃត្រូវបានគណនារួចរាល់!\n\n"
-                msg += f"📅 ថ្ងៃ: {today}\n"
-                msg += f"👥 ចំនួនអ្នកជំងឺ: {len(today_patients)} នាក់\n"
-                msg += f"📦 ឈ្មោះ: {zip_filename}\n"
-                msg += f"📊 ទំហំ: {file_size:.2f} MB\n\n"
-                msg += f"📂 ទីតាំង: {zip_path}\n\n"
-                msg += f"📤 ផ្ញើទៅ: {telegram_contact}\n\n"
-                msg += f"សូមអនុវត្តតាមជំហានខាងក្រោម:\n"
-                msg += f"1. ចុច OK ដើម្បីបើក Telegram\n"
-                msg += f"2. ស្វែងរក {telegram_contact}\n"
-                msg += f"3. អូស file ចូលក្នុង Telegram\n\n"
-                msg += f"💡 ឬចម្លង file ពី folder ដោយផ្ទាល់។"
+                msg = self._build_telegram_ready_message(
+                    "✅ របាយការណ៍ប្រចាំថ្ងៃត្រូវបានគណនារួចរាល់!",
+                    zip_filename,
+                    file_size,
+                    zip_path,
+                    telegram_contact,
+                    extra_lines=[
+                        f"📅 ថ្ងៃ: {today}",
+                        f"👥 ចំនួនអ្នកជំងឺ: {len(today_patients)} នាក់",
+                    ],
+                )
 
                 reply = QMessageBox.information(self, "✅ Daily Report Ready", msg,
                                                QMessageBox.Ok | QMessageBox.Cancel)
 
                 if reply == QMessageBox.Ok:
-                    copy_to_clipboard(zip_path)
-                    self._open_telegram_url(telegram_contact)
-                    QTimer.singleShot(1500, lambda: self._open_file_explorer(zip_path))
-                    QTimer.singleShot(1700, lambda: self._show_daily_report_instructions(zip_path, file_size, len(today_patients), telegram_contact))
+                    self._open_prepared_telegram_share(
+                        zip_path,
+                        telegram_contact,
+                        lambda: self._show_daily_report_instructions(zip_path, file_size, len(today_patients), telegram_contact),
+                    )
 
             finally:
                 # សម្អា់ temp file ជានិច្ច
-                if temp_db_path and os.path.exists(temp_db_path):
-                    try:
-                        os.remove(temp_db_path)
-                    except Exception:
-                        pass
+                self._cleanup_temp_file(temp_db_path)
 
         except PermissionError:
             QMessageBox.critical(self, "❌ កំហុស",
@@ -7245,23 +7018,13 @@ class App(QWidget):
             QMessageBox.critical(self, "❌ កំហុស", f"មិនអាចបង្កើតរបាយការណ៍ប្រចាំថ្ងៃបានទេ: {str(e)}")
 
     def _show_daily_report_instructions(self, zip_path, file_size, patient_count, telegram_contact):
-        """បង្ហាញការណែនាំផ្ញើរបាយការណ៍ប្រចាំថ្ងៃ"""
-        instructions = QMessageBox(self)
-        instructions.setIcon(QMessageBox.Information)
-        instructions.setWindowTitle("📤 ជំហានផ្ញើរបាយការណ៍")
-        instructions.setText(
-            "✅ File path ត្រូវបានចម្លងទៅ Clipboard ហើយ!\n\n"
-            "📋 វិធីផ្ញើ៖\n"
-            "1. ចុច Ctrl + V ដើម្បី Paste file path ចូល Telegram\n"
-            "2. ឬអូស file ពី folder ចូលក្នុង Telegram\n\n"
-            f"📂 ឈ្មោះ file: {os.path.basename(zip_path)}\n"
-            f"📊 ទំហំ: {file_size:.2f} MB\n"
-            f"👥 ចំនួនអ្នកជំងឺ: {patient_count} នាក់\n"
-            f"📤 ផ្ញើទៅ: {telegram_contact}"
+        self._show_telegram_share_instructions(
+            "📤 ជំហានផ្ញើរបាយការណ៍",
+            zip_path,
+            file_size,
+            telegram_contact,
+            [f"👥 ចំនួនអ្នកជំងឺ: {patient_count} នាក់"],
         )
-        instructions.addButton("យល់ហើយ 👍", QMessageBox.AcceptRole)
-        instructions.exec_()
-
     def renumber_all_serials(self):
         db.renumber_all_patient_numbering()
         self.update_next_serial_no()
@@ -8333,29 +8096,7 @@ if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)  # type: ignore
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)  # type: ignore
     app = QApplication(sys.argv)
-    app.setStyleSheet("""
-        QMessageBox {
-            background-color: #1e272e;
-        }
-        QMessageBox QLabel {
-            color: #ffffff;
-            min-height: 24px;
-            min-width: 260px;
-            padding: 6px 10px;
-        }
-        QMessageBox QPushButton {
-            background-color: #0fbcf9;
-            color: #000000;
-            border: none;
-            border-radius: 5px;
-            padding: 8px 18px;
-            min-width: 90px;
-            font-weight: bold;
-        }
-        QMessageBox QPushButton:hover {
-            background-color: #00a8ff;
-        }
-    """)
+    app.setStyleSheet(MESSAGE_BOX_STYLESHEET)
     font_db = QFontDatabase()
     for font_name in [
         "Noto Sans Khmer",

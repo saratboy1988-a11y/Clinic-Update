@@ -491,6 +491,31 @@ def merge_patients(source_patients, source_columns):
 
     return merged_count, skipped_count
 
+
+def merge_database_file(source_db_path):
+    """
+    Merge patient data from a source SQLite database into the current database.
+
+    Returns:
+        tuple[int, int]: (merged_count, skipped_count)
+    """
+    try:
+        with sqlite3.connect(source_db_path) as source_conn:
+            source_cur = source_conn.cursor()
+            source_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='patient'")
+            if not source_cur.fetchone():
+                return 0, 0
+
+            source_cur.execute("PRAGMA table_info(patient)")
+            columns = [row[1] for row in source_cur.fetchall()]
+            source_cur.execute("SELECT * FROM patient")
+            source_patients = source_cur.fetchall()
+
+        return merge_patients(source_patients, columns)
+    except Exception as e:
+        logger.error(f"Merge error: {e}")
+        raise
+
 # Helper function to handle database connection and read operations (Select)
 def execute_read(query, params=(), one=False):
     try:

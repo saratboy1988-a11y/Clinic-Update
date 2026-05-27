@@ -597,7 +597,7 @@ class ChangePasswordDialog(BaseDialog):
 
 class SignUpDialog(BaseDialog):
     def __init__(self):
-        super().__init__("Sign Up", size=(550, 450))  # Increased size
+        super().__init__("Sign Up", size=(550, 520))  # Increased size
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)  # type: ignore
         
         self.user = QLineEdit()
@@ -616,6 +616,12 @@ class SignUpDialog(BaseDialog):
         self.pwd_confirm.setEchoMode(QLineEdit.Password)
         self.pwd_confirm.setFixedHeight(45)  # Larger input field
         self.pwd_confirm.setFont(QFont("Segoe UI", 14))  # Larger font
+
+        self.branch_code = QLineEdit()
+        self.branch_code.setPlaceholderText("Branch Code (e.g. PP01)")
+        self.branch_code.setFixedHeight(45)
+        self.branch_code.setFont(QFont("Segoe UI", 14))
+        self.branch_code.setInputMethodHints(Qt.ImhLatinOnly | Qt.ImhPreferLatin)  # type: ignore[attr-defined]
         
         self.btn_register = create_button("Register", COLOR_ACCENT_BLUE, "black", self.register)
         self.btn_register.setFixedHeight(45)
@@ -634,21 +640,24 @@ class SignUpDialog(BaseDialog):
         self.add_widget(self.pwd)
         self.add_widget(QLabel("Confirm Password:"))
         self.add_widget(self.pwd_confirm)
+        self.add_widget(QLabel("Branch Code:"))
+        self.add_widget(self.branch_code)
         self.add_widget(self.btn_register)
     
     def register(self):
         user = self.user.text()
         pwd = self.pwd.text()
         confirm = self.pwd_confirm.text()
+        branch_code = db.normalize_branch_code(self.branch_code.text())
         
-        if not user or not pwd:
+        if not user or not pwd or not branch_code:
             show_warning(self, "Please fill all fields")
         elif pwd != confirm:
             show_warning(self, "Passwords do not match")
         elif db.check_username(user):
             show_warning(self, "Username already exists")
         else:
-            db.add_user(user, pwd)
+            db.add_user(user, pwd, branch_code)
             show_success(self, "Account created! You can now login.")
             self.accept()
 
@@ -1166,6 +1175,7 @@ class LoginDialog(BaseDialog):
 
         # កំណត់ current_user (នឹងត្រូវបានកំណត់ពេល Login ជោគជ័យ)
         self.current_user = ""
+        self.user_context = None
 
         # Load settings
         self.config = configparser.ConfigParser()
@@ -1643,19 +1653,25 @@ class LoginDialog(BaseDialog):
                 # បំប្លែង date format សម្រាប់ SQL
                 start_sql = start_date  # dd/mm/yyyy
                 end_sql = end_date
+                branch_clause = ""
+                branch_params = ()
+                if self.active_branch_code:
+                    branch_clause = " AND (branch_code = ? OR branch_code IS NULL OR branch_code = '')"
+                    branch_params = (self.active_branch_code,)
 
                 patients_selected = db.execute_read(
-                    """
+                    f"""
                     SELECT * FROM patient
                     WHERE (SUBSTR(date, 7, 4) || SUBSTR(date, 4, 2) || SUBSTR(date, 1, 2))
                           BETWEEN (SUBSTR(?, 7, 4) || SUBSTR(?, 4, 2) || SUBSTR(?, 1, 2))
                               AND (SUBSTR(?, 7, 4) || SUBSTR(?, 4, 2) || SUBSTR(?, 1, 2))
+                    {branch_clause}
                     """,
-                    (start_sql, start_sql, start_sql, end_sql, end_sql, end_sql)
+                    (start_sql, start_sql, start_sql, end_sql, end_sql, end_sql, *branch_params)
                 ) or []
             else:
                 # Full database
-                patients_selected = db.view() or []
+                patients_selected = db.view(self.active_branch_code) or []
 
             if not patients_selected:
                 QMessageBox.information(
@@ -2246,7 +2262,7 @@ class LoginDialog(BaseDialog):
             # ៧. Auto Merge ទិន្ននយ (ជានិច្ច មិនជំនួសទេ)
             progress.setLabelText("✅ ផ្ទៀងផ្ទាត់រួចរាល់! កំពុងបញ្ចូលទិន្នន័យ...")
             QApplication.processEvents()
-            merged_count, skipped_count = db.merge_database_file(temp_db)
+            merged_count, skipped_count = db.merge_database_file(temp_db, self.branch_code)
             msg = (
                 "✅ បញ្ចូលទិន្នន័យជោគជ័យ! (Auto Merge)\n\n"
                 f"📅 រយៈពេល: {download_period_label}\n"
@@ -2651,8 +2667,10 @@ class LoginDialog(BaseDialog):
             return False
 
     def check_login(self):
-        if db.check_user(self.user.text().strip(), self.pwd.text().strip()):
-            db.log_login(self.user.text().strip()) # Log the successful login
+        username = self.user.text().strip()
+        if db.check_user(username, self.pwd.text().strip()):
+            self.user_context = db.get_user_context(username)
+            db.log_login(username) # Log the successful login
             self.accept()
         else:
             QMessageBox.warning(self, "Error", "Invalid Username or Password")
@@ -3091,11 +3109,15 @@ class SettingsDialog(QDialog):
         self.accept()
 
 class App(QWidget):
-    def __init__(self, username):
+    def __init__(self, username, user_context=None):
         super().__init__()
         self.setWindowTitle(f"Clinic Management System - v{APP_VERSION}")
         self._configure_window_for_screen()
         self.current_user = username
+        self.user_context = user_context or db.get_user_context(username)
+        self.is_admin = bool(self.user_context.get("is_admin"))
+        self.branch_code = self.user_context.get("branch_code", "MAIN")
+        self.active_branch_code = None if self.is_admin else self.branch_code
 
         # កំណត់ Icon សម្រាប់កម្មវិធី
         self._set_app_icon()
@@ -3219,7 +3241,8 @@ class App(QWidget):
 
         # Add Status Bar for user feedback
         self.statusBar = QStatusBar()
-        self.statusBar.showMessage(f"សូមស្វាគមន៍, {self.current_user}! ប្រព័ន្ធត្រៀមរួចរាល់។")
+        branch_label = "ALL" if self.is_admin else self.branch_code
+        self.statusBar.showMessage(f"សូមស្វាគមន៍, {self.current_user}! Branch: {branch_label}")
         main_layout.addWidget(self.statusBar)
 
         self.apply_app_font(self.current_font)
@@ -5011,9 +5034,14 @@ class App(QWidget):
 
         try:
             # --- Check if patient visited TODAY only (not blocking same patient on different days) ---
+            branch_clause = ""
+            branch_params = ()
+            if self.active_branch_code:
+                branch_clause = " AND (branch_code = ? OR branch_code IS NULL OR branch_code = '')"
+                branch_params = (self.active_branch_code,)
             exists_today = db.execute_read(
-                "SELECT id, name FROM patient WHERE date=? AND name=? AND patient_type=?",
-                (self.date.text(), self.name.text(), self.current_patient_type),
+                f"SELECT id, name FROM patient WHERE date=? AND name=? AND patient_type=?{branch_clause}",
+                (self.date.text(), self.name.text(), self.current_patient_type, *branch_params),
                 one=True
             )
             
@@ -5033,11 +5061,11 @@ class App(QWidget):
                 f"""
                 SELECT id, date, diagnosis, treatment
                 FROM patient
-                WHERE name=? AND {patient_type_clause}
+                WHERE name=? AND {patient_type_clause}{branch_clause}
                 ORDER BY (SUBSTR(date, 7, 4) || SUBSTR(date, 4, 2) || SUBSTR(date, 1, 2)) DESC
                 LIMIT 5
                 """,
-                (self.name.text(), *patient_type_params),
+                (self.name.text(), *patient_type_params, *branch_params),
             )
             
             if patient_history and len(patient_history) > 0:
@@ -5084,7 +5112,7 @@ class App(QWidget):
                 f"{dis_cat_txt}::{dis_next}", self.symptoms.text(), self.paraclinical.text(),
                 self.diagnosis.currentText(), self.treatment.text(), imci_db,
                 self._create_nutrition_string(), self.ref_to.text(), self.service.currentText(),
-                self.remark.text(), self.current_patient_type
+                self.remark.text(), self.current_patient_type, branch_code=self.branch_code
             )
             self.clear_inputs()
             self.view()
@@ -5094,7 +5122,7 @@ class App(QWidget):
 
     def view(self):
         # Filter by current patient type to show separate serial sequences
-        rows = db.view_by_patient_type(self.current_patient_type)
+        rows = db.view_by_patient_type(self.current_patient_type, self.active_branch_code)
         self.load_table(rows)
         # Update the serial number for the currently selected patient type tab
         self.update_next_serial_no()
@@ -5102,7 +5130,7 @@ class App(QWidget):
 
     def view_all_patients(self):
         """View all patients without filtering (for export, reports, etc.)"""
-        rows = db.view()
+        rows = db.view(self.active_branch_code)
         self.load_table(rows)
         self.setup_autocomplete(rows)
 
@@ -5123,7 +5151,7 @@ class App(QWidget):
         print(f"[DEBUG COUNTER] Getting next counter for: category='{category}', patient_type='{self.current_patient_type}', column='{column_name}'")
 
         # Pass patient_type to get counter separately for Child/Adult
-        max_val = db.get_max_counter_for_category(column_name, category, self.current_patient_type)
+        max_val = db.get_max_counter_for_category(column_name, category, self.current_patient_type, self.active_branch_code)
         print(f"[DEBUG COUNTER] Max value found: {max_val}, Next will be: {max_val + 1}")
         return max_val + 1
 
@@ -5230,7 +5258,7 @@ class App(QWidget):
                                          f'តើអ្នកពិតជាចង់លុបអ្នកជំងឺដែលមាន ID {self.selected_id} មែនទេ?',
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes:
-                db.delete(self.selected_id)
+                db.delete(self.selected_id, self.active_branch_code)
                 self.view()
                 self.statusBar.showMessage(f"Patient ID {self.selected_id} deleted.", 5000)
                 self.clear_inputs()
@@ -5248,6 +5276,7 @@ class App(QWidget):
                 try:
                     patient_data = db.get_patient_by_id(self.selected_id)
                     existing_serial_no = patient_data[2] if patient_data and len(patient_data) > 2 else self.serial_no.text()
+                    existing_branch_code = patient_data[24] if patient_data and len(patient_data) > 24 else self.branch_code
 
                     # Get existing IMCI value from database to preserve it
                     existing_imci = ""
@@ -5290,7 +5319,7 @@ class App(QWidget):
                         self.paraclinical.text(), self.diagnosis.currentText(), self.treatment.text(),
                         imci_db, self._create_nutrition_string(),
                         self.ref_to.text(), self.service.currentText(), self.remark.text(),
-                        self.current_patient_type
+                        self.current_patient_type, existing_branch_code
                     )
                     self.view()
                     self.statusBar.showMessage(f"កែប្រែទិន្នន័យ ID {self.selected_id} បានជោគជ័យ!", 5000)
@@ -5304,14 +5333,14 @@ class App(QWidget):
         # Use the dedicated search bar input instead of the form's name field
         keyword = self.search_input.text().strip()
         # Filter search results by current patient type
-        rows = db.search(keyword, self.current_patient_type)
+        rows = db.search(keyword, self.current_patient_type, self.active_branch_code)
         self.load_table(rows)
         self.update_next_serial_no()
 
     def show_statistics(self):
         """Fetches statistics from the database and displays them in a dialog."""
         try:
-            s = db.get_statistics()
+            s = db.get_statistics(self.active_branch_code)
             c = s['child']  # Children stats
             a = s['adult']  # Adult stats
             o = s['overall']  # Overall stats
@@ -5866,6 +5895,9 @@ class App(QWidget):
         dialog.exec_()
 
     def restore_database(self):
+        if not self.is_admin:
+            QMessageBox.warning(self, "Permission Denied", "Only admin can restore a full database backup.")
+            return
         # Critical warning to the user
         reply = QMessageBox.critical(self, 'Confirm Restore', 
                                      '<b>WARNING:</b> This will completely overwrite all current data with the selected backup.\n\n'
@@ -5960,7 +5992,8 @@ class App(QWidget):
                 sex=self.rep_sex.currentText(),
                 disease=self.rep_disease.currentText(),
                 area=self.rep_area.currentText(),
-                p_type=p_type
+                p_type=p_type,
+                branch_code=self.active_branch_code
             ) or []
 
             # Get Group By and Sub-Group By selections
@@ -6335,8 +6368,12 @@ class App(QWidget):
         Get patient list based on filters
         Returns list of dicts with patient info
         """
-        # Get all patients of current type
-        all_patients = db.view_by_patient_type(self.rep_patient_type.currentText()) or []
+        # Get patients visible to this user's branch.
+        ptype = self.rep_patient_type.currentText()
+        if ptype == "All":
+            all_patients = db.view(self.active_branch_code) or []
+        else:
+            all_patients = db.view_by_patient_type(ptype, self.active_branch_code) or []
         
         filtered = []
         for row in all_patients:
@@ -6416,7 +6453,7 @@ class App(QWidget):
                 "FFE74C3C",
                 {"A": 35, "B": 15, "C": 15, "D": 15, "E": 15},
             )
-            s = db.get_statistics()
+            s = db.get_statistics(self.active_branch_code)
             c = s['child']
             a = s['adult']
             o = s['overall']
@@ -6484,7 +6521,7 @@ class App(QWidget):
                 x_coords = [30, 80, 200, 250, 310, 400]
 
                 # Get ALL patients for PDF export (not filtered by type)
-                rows = db.view() or []
+                rows = db.view(self.active_branch_code) or []
                 for row in rows:
                     # Clean up Age (row[6]) which might be "Category::Value"
                     age_raw = str(row[6])
@@ -6627,7 +6664,7 @@ class App(QWidget):
             return
 
         try:
-            added_count, skipped_count = db.merge_database_file(file_path)
+            added_count, skipped_count = db.merge_database_file(file_path, self.branch_code)
             self.view()
             self.update_next_serial_no()
             self.statusBar.showMessage(
@@ -6675,7 +6712,10 @@ class App(QWidget):
             filename = f"backup_clinic_{username_safe}_{datetime.now().strftime('%Y%m%d_%H%M')}.db"
             save_path, _ = QFileDialog.getSaveFileName(self, "Backup Database", filename, "SQLite Files (*.db)")
             if save_path:
-                shutil.copy(db.DB_NAME, save_path)
+                if self.is_admin:
+                    shutil.copy(db.DB_NAME, save_path)
+                else:
+                    build_patient_share_database(save_path, db.view(self.active_branch_code) or [])
                 self.statusBar.showMessage(f"Database backed up successfully to {os.path.basename(save_path)}", 7000)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Backup failed: {str(e)}")
@@ -6877,7 +6917,10 @@ class App(QWidget):
                 # បង្កើត temp file សម្រាប់ copy database
                 fd, temp_db_copy = tempfile.mkstemp(suffix=".db", prefix="clinic_backup_")
                 os.close(fd)
-                shutil.copy2(db_path, temp_db_copy)
+                if self.is_admin:
+                    shutil.copy2(db_path, temp_db_copy)
+                else:
+                    build_patient_share_database(temp_db_copy, db.view(self.active_branch_code) or [])
 
                 # បង្កើត ZIP file ក្នុង AppData (មិនមែន Program Files)
                 zip_filename = f"ClinicDB_Full_{timestamp}.zip"
@@ -6971,9 +7014,14 @@ class App(QWidget):
             today = datetime.now().strftime("%d/%m/%Y")
 
             # ទាញយកអ្នកជំងឺថ្ងៃនេះ
+            branch_clause = ""
+            branch_params = ()
+            if self.active_branch_code:
+                branch_clause = " AND (branch_code = ? OR branch_code IS NULL OR branch_code = '')"
+                branch_params = (self.active_branch_code,)
             today_patients = db.execute_read(
-                "SELECT * FROM patient WHERE date=?",
-                (today,)
+                f"SELECT * FROM patient WHERE date=?{branch_clause}",
+                (today, *branch_params)
             ) or []
 
             if not today_patients:
@@ -7049,7 +7097,7 @@ class App(QWidget):
     def update_next_serial_no(self):
         if self.selected_id:
             return
-        max_serial = db.get_max_serial_for_type(self.current_patient_type, self.date.text())
+        max_serial = db.get_max_serial_for_type(self.current_patient_type, self.date.text(), self.active_branch_code)
         prefix = 'C-' if self.current_patient_type == 'Child' else 'A-'
         self.serial_no.setText(f"{prefix}{max_serial + 1}")
 
@@ -7407,10 +7455,11 @@ class App(QWidget):
                                      'តើអ្នកពិតជាចង់លុបទិន្នន័យទាំងអស់ចេញពីប្រព័ន្ធមែនទេ?\n(សកម្មភាពនេះមិនអាចត្រឡប់វិញបានទេ!)',
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
-            db.delete_all()
+            db.delete_all(self.active_branch_code)
             self.view()
             self.clear_inputs()
-            self.statusBar.showMessage("Database has been completely reset.", 5000)
+            scope = "all branches" if self.is_admin else f"branch {self.branch_code}"
+            self.statusBar.showMessage(f"Database has been reset for {scope}.", 5000)
             # QMessageBox.information(self, "Success", "ទិន្នន័យទាំងអស់ត្រូវបានលុបសម្អាត!")
 
     def open_change_password(self):
@@ -7972,14 +8021,15 @@ class AdvancedQueryDialog(QDialog):
             area = self.area_combo.currentText()
             patient_type = self.type_combo.currentText()
             sex = self.sex_combo.currentText()
+            branch_code = getattr(self.parent_app, "active_branch_code", None)
 
             # Get all patients
             if patient_type.startswith("Child"):
-                all_patients = db.view_by_patient_type("Child") or []
+                all_patients = db.view_by_patient_type("Child", branch_code) or []
             elif patient_type.startswith("Adult"):
-                all_patients = db.view_by_patient_type("Adult") or []
+                all_patients = db.view_by_patient_type("Adult", branch_code) or []
             else:
-                all_patients = db.view() or []
+                all_patients = db.view(branch_code) or []
 
             # Apply filters
             filtered = []
@@ -8171,7 +8221,7 @@ if __name__ == "__main__":
         if login.exec_() == QDialog.Accepted:
             print("Login Successful! Opening Main Window...")
             username = login.user.text()
-            win = App(username)
+            win = App(username, login.user_context)
             win.show()
             app.exec_() # This blocks until the window is closed (by logout or 'X' button)
             print("Window closed. Returning to login screen...")

@@ -4,7 +4,7 @@
 
 #define Unicode
 #define MyAppName "Clinic Management System"
-#define MyAppVersion "2.0.17"
+#define MyAppVersion "2.0.18"
 #define MyAppPublisher "NOU SARAT"
 #define MyAppExeName "ClinicManager.exe"
 #define MyAppURL "https://t.me/nousarat"

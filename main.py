@@ -22,6 +22,18 @@ if sys.platform == 'win32' and sys.stdout:
 # Suppress noisy font warnings regarding OpenType support for Khmer script
 os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts.warning=false"
 
+
+def _subprocess_no_window_kwargs():
+    kwargs = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        startupinfo.wShowWindow = 0
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
 import excel_handler
 import report_handler
 from version_manager import get_version
@@ -335,7 +347,11 @@ def get_machine_id():
             import shutil
             wmic_path = shutil.which("wmic")
             if wmic_path:
-                output = subprocess.check_output([wmic_path, "csproduct", "get", "uuid"], shell=False, creationflags=0x08000000).decode(errors="ignore")
+                output = subprocess.check_output(
+                    [wmic_path, "csproduct", "get", "uuid"],
+                    shell=False,
+                    **_subprocess_no_window_kwargs()
+                ).decode(errors="ignore")
                 lines = [line.strip() for line in output.splitlines() if line.strip()]
                 if len(lines) > 1:
                     uuid = lines[1]
@@ -1552,7 +1568,8 @@ class LoginDialog(BaseDialog):
                 text=True,
                 encoding='utf-8',
                 errors='replace',
-                timeout=5
+                timeout=5,
+                **_subprocess_no_window_kwargs()
             )
             return result.returncode == 0
         except Exception:
@@ -1783,7 +1800,8 @@ class LoginDialog(BaseDialog):
                     encoding='utf-8',
                     errors='replace',
                     cwd=temp_git_dir,
-                    timeout=120
+                    timeout=120,
+                    **_subprocess_no_window_kwargs()
                 )
 
                 if result.returncode != 0:
@@ -5213,8 +5231,6 @@ class App(QWidget):
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes:
                 db.delete(self.selected_id)
-                # Fix: រៀបលេខរៀងឡើងវិញភ្លាមៗបន្ទាប់ពីលុប ដើម្បីកុំឱ្យលេខដាច់កង់
-                self.renumber_all_serials()
                 self.view()
                 self.statusBar.showMessage(f"Patient ID {self.selected_id} deleted.", 5000)
                 self.clear_inputs()
@@ -5230,11 +5246,13 @@ class App(QWidget):
             item = self.table.item(row, 0)
             if self.selected_id:
                 try:
+                    patient_data = db.get_patient_by_id(self.selected_id)
+                    existing_serial_no = patient_data[2] if patient_data and len(patient_data) > 2 else self.serial_no.text()
+
                     # Get existing IMCI value from database to preserve it
                     existing_imci = ""
                     if self.current_patient_type == "Child":
                         # Fetch the current IMCI value for this patient
-                        patient_data = db.get_patient_by_id(self.selected_id)
                         if patient_data and len(patient_data) > 18:
                             existing_imci = patient_data[18] or ""
                     
@@ -5264,7 +5282,7 @@ class App(QWidget):
                     age_value = self.get_age_value()
 
                     db.update(
-                        self.selected_id, self.date.text(), self.serial_no.text(), self.card_id.text(),
+                        self.selected_id, self.date.text(), existing_serial_no, self.card_id.text(),
                         self.name.text(), self.guardian.text(), f"{self.age_cat.currentText()}::{age_value}",
                         self.sex.currentText(), f"{self.area_cat.currentText()}::{self.area_val.text()}", self.pregnant.text(),
                         self.address.text(), self.phone.text(), self.ref_from.text(),
@@ -5276,7 +5294,6 @@ class App(QWidget):
                     )
                     self.view()
                     self.statusBar.showMessage(f"កែប្រែទិន្នន័យ ID {self.selected_id} បានជោគជ័យ!", 5000)
-                    self.renumber_categories()
                     self.clear_inputs()
                 except Exception as e:
                     QMessageBox.critical(self, "Update Error", f"មិនអាចកែប្រែទិន្នន័យបានទេ: {str(e)}")
@@ -7030,6 +7047,8 @@ class App(QWidget):
         self.update_next_serial_no()
 
     def update_next_serial_no(self):
+        if self.selected_id:
+            return
         max_serial = db.get_max_serial_for_type(self.current_patient_type, self.date.text())
         prefix = 'C-' if self.current_patient_type == 'Child' else 'A-'
         self.serial_no.setText(f"{prefix}{max_serial + 1}")
@@ -7375,9 +7394,9 @@ class App(QWidget):
         else:
              self.current_patient_type = "Adult"
 
+        self.selected_id = None # Clear selected ID before generating the next new serial
         self.update_next_serial_no()
 
-        self.selected_id = None # Clear selected ID
         self.table.blockSignals(True)
         self.table.clearSelection() # Remove visual selection from table
         self.table.blockSignals(False)

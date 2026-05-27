@@ -435,7 +435,7 @@ def _renumber_categories_with_cursor(cur):
 
 
 def renumber_all_patient_numbering():
-    """Normalize patient type and rebuild category numbering fields."""
+    """Normalize patient type without changing existing patient serial/code values."""
     with sqlite3.connect(DB_NAME) as conn:
         cur = conn.cursor()
         cur.execute("SELECT id, patient_type, serial_no FROM patient")
@@ -445,7 +445,6 @@ def renumber_all_patient_numbering():
         ]
         if type_updates:
             cur.executemany("UPDATE patient SET patient_type=? WHERE id=?", type_updates)
-        _renumber_categories_with_cursor(cur)
         conn.commit()
 
 
@@ -484,8 +483,6 @@ def merge_patients(source_patients, source_columns):
 
         for patient in _assign_continuing_serials_for_merge(cur, patients_to_insert):
             _insert_patient_with_cursor(cur, patient)
-
-        _renumber_categories_with_cursor(cur)
 
         conn.commit()
 
@@ -586,7 +583,6 @@ def bulk_replace_patients(patients):
         cur.execute("DELETE FROM patient")
         for patient in patients:
             _insert_patient_with_cursor(cur, patient)
-        _renumber_categories_with_cursor(cur)
         conn.commit()
 
 
@@ -596,7 +592,6 @@ def bulk_insert_patients(patients):
         cur = conn.cursor()
         for patient in patients:
             _insert_patient_with_cursor(cur, patient)
-        _renumber_categories_with_cursor(cur)
         conn.commit()
 
 

@@ -14,7 +14,7 @@ import os
 # This file is the SINGLE SOURCE OF TRUTH for version numbers
 # ============================================================================
 
-APP_VERSION = "2.0.16"  # <-- UPDATE THIS LINE for new releases
+APP_VERSION = "2.0.17"  # <-- UPDATE THIS LINE for new releases
 
 # Version format: MAJOR.MINOR.PATCH
 # - MAJOR: Breaking changes or major new features

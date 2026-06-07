@@ -39,7 +39,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; OnlyBelowVersion: 6.1; Check: not IsAdminInstallMode
+#ifdef IncludeGitInstaller
 Name: "installgit"; Description: "Install Git for Windows (needed for Cloud Upload)"; GroupDescription: "Optional dependencies:"; Flags: checkedonce; Check: not IsGitInstalled
+#endif
 
 ; ឯកសារដែលត្រូវដាក់បញ្ចូល
 [Files]
@@ -50,7 +52,9 @@ Source: "dist\ClinicManager\*"; DestDir: "{app}"; Flags: ignoreversion recursesu
 Source: "healthcare.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Optional Git for Windows installer. Put the Git installer at deps\GitInstaller.exe before building.
+#ifdef IncludeGitInstaller
 Source: "deps\GitInstaller.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; Tasks: installgit; Check: not IsGitInstalled
+#endif
 
 ; ឯកសារបម្រុង (បើមាន) - Comment ចោលសិន ព្រោះ clinic.db អាចនឹងមិនមាន
 ; Source: "dist\clinic.db"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall
@@ -70,7 +74,9 @@ Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Fil
 
 ; ការងារពេលចាប់ផ្តើម
 [Run]
+#ifdef IncludeGitInstaller
 Filename: "{tmp}\GitInstaller.exe"; Parameters: "/VERYSILENT /NORESTART /NOCANCEL /SP-"; StatusMsg: "Installing Git for Windows..."; Flags: waituntilterminated; Tasks: installgit; Check: not IsGitInstalled
+#endif
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 ; ការកំណត់មុនពេលដំឡើង

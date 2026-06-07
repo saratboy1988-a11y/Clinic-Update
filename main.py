@@ -12,6 +12,7 @@ import tempfile
 import re
 import hashlib
 import platform
+import ssl
 from datetime import datetime
 from PyQt5.QtCore import QTimer
 
@@ -33,6 +34,34 @@ def _subprocess_no_window_kwargs():
         startupinfo.wShowWindow = 0
         kwargs["startupinfo"] = startupinfo
     return kwargs
+
+
+def _github_update_ssl_context():
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
+def _urlopen_update_request(request, timeout=20):
+    """Open update URLs with a bundled CA store and a GitHub-only fallback."""
+    try:
+        return urllib.request.urlopen(request, timeout=timeout, context=_github_update_ssl_context())
+    except urllib.error.URLError as e:
+        reason = getattr(e, "reason", None)
+        is_cert_error = isinstance(reason, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(e)
+        host = urllib.parse.urlparse(request.full_url).netloc.lower()
+        is_github_update_host = host in {
+            "github.com",
+            "raw.githubusercontent.com",
+            "objects.githubusercontent.com",
+            "release-assets.githubusercontent.com",
+        } or host.endswith(".githubusercontent.com")
+        if is_cert_error and is_github_update_host:
+            fallback_context = ssl._create_unverified_context()
+            return urllib.request.urlopen(request, timeout=timeout, context=fallback_context)
+        raise
 
 
 import excel_handler
@@ -8588,7 +8617,7 @@ class App(QWidget):
                 update_url,
                 headers={"User-Agent": f"ClinicManager/{APP_VERSION}"}
             )
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with _urlopen_update_request(request, timeout=10) as response:
                 data = json.loads(response.read().decode("utf-8"))
 
             remote_version = str(data.get("version", "")).strip()
@@ -8735,7 +8764,7 @@ class App(QWidget):
             url,
             headers={"User-Agent": f"ClinicManager/{APP_VERSION}"}
         )
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with _urlopen_update_request(request, timeout=20) as response:
             with open(target_path, "wb") as handle:
                 shutil.copyfileobj(response, handle)
 

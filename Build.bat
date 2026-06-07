@@ -45,6 +45,7 @@ pyinstaller --noconsole --onedir --name "ClinicManager" ^
 --hidden-import=docx ^
 --hidden-import=matplotlib.pyplot ^
 --hidden-import=encodings.utf_8_sig ^
+--hidden-import=certifi ^
 --add-binary "C:\Users\PC\AppData\Local\Programs\Python\Python310\vcruntime140.dll;." ^
 --add-binary "C:\Users\PC\AppData\Local\Programs\Python\Python310\vcruntime140_1.dll;." ^
 --add-data "settings.ini;." ^

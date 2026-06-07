@@ -1387,9 +1387,17 @@ def get_statistics(branch_code=None):
     
     return stats
 
-def get_diagnosis_statistics(new_only=False):
+def get_diagnosis_statistics(new_only=False, branch_code=None):
     """Return patient totals grouped by diagnosis and age range."""
-    where_clause = "WHERE disease_case LIKE 'ថ្មី%'" if new_only else ""
+    filters = []
+    params = []
+    if new_only:
+        filters.append("disease_case LIKE 'ថ្មី%'")
+    if branch_code:
+        branch_clause, branch_params = _branch_filter_clause(branch_code)
+        filters.append(branch_clause)
+        params.extend(branch_params)
+    where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
     query = """
     SELECT
         COALESCE(NULLIF(TRIM(diagnosis), ''), 'មិនបានបញ្ជាក់') as diagnosis_name,
@@ -1421,7 +1429,7 @@ def get_diagnosis_statistics(new_only=False):
     GROUP BY diagnosis_name
     ORDER BY total DESC, diagnosis_name ASC
     """.format(where_clause=where_clause)
-    rows = execute_read(query) or []
+    rows = execute_read(query, tuple(params)) or []
     return [
         {
             "diagnosis": row["diagnosis_name"],
@@ -1451,6 +1459,46 @@ def get_diagnosis_statistics(new_only=False):
         }
         for row in rows
     ]
+
+def get_service_use_summary(branch_code=None):
+    """Return service-use totals by broad age range and sex."""
+    branch_clause, branch_params = _branch_filter_clause(branch_code) if branch_code else ("1=1", [])
+    under5 = """
+        (
+            age LIKE '០-២៩ថ្ងៃ%' OR age LIKE '0-28%' OR age LIKE '0-29%'
+            OR age LIKE '២៩ថ្ងៃ-១១ខែ%' OR age LIKE '29-11%' OR age LIKE '29ថ្ងៃ-11ខែ%' OR age LIKE '29ថ្ងៃ-១១ខែ%'
+            OR age LIKE '១-៤ឆ្នាំ%' OR age LIKE '1-4%'
+        )
+    """
+    age_5_14 = "(age LIKE '៥-១៤ឆ្នាំ%' OR age LIKE '5-14%')"
+    age_15_plus = f"(NOT {under5} AND NOT {age_5_14})"
+
+    query = f"""
+    SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN {under5} THEN 1 ELSE 0 END) as under5,
+        SUM(CASE WHEN {age_5_14} THEN 1 ELSE 0 END) as age_5_14,
+        SUM(CASE WHEN {age_15_plus} THEN 1 ELSE 0 END) as age_15_plus,
+        SUM(CASE WHEN sex = 'ប្រុស' THEN 1 ELSE 0 END) as male,
+        SUM(CASE WHEN sex = 'ស្រី' THEN 1 ELSE 0 END) as female,
+        SUM(CASE WHEN disease_case LIKE 'ថ្មី%' THEN 1 ELSE 0 END) as new_total,
+        SUM(CASE WHEN disease_case LIKE 'ថ្មី%' AND {under5} THEN 1 ELSE 0 END) as new_under5,
+        SUM(CASE WHEN disease_case LIKE 'ថ្មី%' AND {age_5_14} THEN 1 ELSE 0 END) as new_age_5_14,
+        SUM(CASE WHEN disease_case LIKE 'ថ្មី%' AND {age_15_plus} THEN 1 ELSE 0 END) as new_age_15_plus,
+        SUM(CASE WHEN disease_case LIKE 'ថ្មី%' AND sex = 'ប្រុស' THEN 1 ELSE 0 END) as new_male,
+        SUM(CASE WHEN disease_case LIKE 'ថ្មី%' AND sex = 'ស្រី' THEN 1 ELSE 0 END) as new_female
+    FROM patient
+    WHERE {branch_clause}
+    """
+    row = execute_read(query, tuple(branch_params), one=True)
+    if not row:
+        row = [0] * 12
+
+    keys = [
+        "total", "under5", "age_5_14", "age_15_plus", "male", "female",
+        "new_total", "new_under5", "new_age_5_14", "new_age_15_plus", "new_male", "new_female",
+    ]
+    return {key: (value or 0) for key, value in zip(keys, row)}
 
 def get_login_history():
     return execute_read("SELECT username, login_time FROM login_history ORDER BY id DESC")

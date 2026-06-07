@@ -73,7 +73,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QVBoxLa
                              QHBoxLayout, QGridLayout, QFrame, QLineEdit, QComboBox, QGroupBox, QDateEdit,
                              QMenu, QAction, QTableWidget, QTableWidgetItem, QDialog, QMessageBox,
                              QCalendarWidget, QShortcut, QFileDialog, QCompleter, QStatusBar, QSplitter,
-                             QProgressDialog, QHeaderView)
+                             QProgressDialog, QHeaderView, QTextBrowser)
 from PyQt5.QtWidgets import QScrollArea
 from PyQt5.QtGui import QFont, QColor, QFontDatabase, QKeySequence, QDesktopServices
 from PyQt5.QtCore import Qt, QDate, QUrl
@@ -6546,12 +6546,12 @@ class App(QWidget):
                 return "".join(diagnosis_rows)
 
             diagnosis_rows_html = build_diagnosis_rows_html(
-                db.get_diagnosis_statistics(),
+                db.get_diagnosis_statistics(branch_code=self.active_branch_code),
                 total_patients,
                 "គ្មានទិន្នន័យរោគវិនិច្ឆ័យ"
             )
             new_case_diagnosis_rows_html = build_diagnosis_rows_html(
-                db.get_diagnosis_statistics(new_only=True),
+                db.get_diagnosis_statistics(new_only=True, branch_code=self.active_branch_code),
                 new_total,
                 "គ្មានទិន្នន័យរោគវិនិច្ឆ័យសម្រាប់ករណីថ្មី"
             )
@@ -6612,6 +6612,48 @@ class App(QWidget):
 
             area_new_rows_html = build_area_new_rows_html()
             area_total_rows_html = build_area_total_rows_html()
+            service_use_summary = db.get_service_use_summary(self.active_branch_code)
+
+            def fmt_num(value):
+                return f"{int(value or 0):,}"
+
+            service_use_summary_html = f"""
+            <h3 style='color: {comparison_header}; font-size: 18px; margin-top: 20px;'>I. ស្ថិតិអ្នកប្រើសេវា</h3>
+            <table border='1' cellpadding='6' width='100%' bgcolor='{table_bg}' style='border-collapse: collapse; font-size: 12px;'>
+                <tr bgcolor='{comparison_header}'>
+                    <td style='color: {header_text}; width: 32%;'><b>១ - បរិយាយលទ្ធផលការផ្តល់សេវា</b></td>
+                    <td style='color: {header_text}; text-align: center;'><b>០-៤ឆ្នាំ</b></td>
+                    <td style='color: {header_text}; text-align: center;'><b>៥-១៤ឆ្នាំ</b></td>
+                    <td style='color: {header_text}; text-align: center;'><b>១៥ឆ្នាំឡើង</b></td>
+                    <td style='color: {header_text}; text-align: center;'><b>សរុប</b></td>
+                    <td style='color: {header_text}; text-align: center;'><b>ប្រុស</b></td>
+                    <td style='color: {header_text}; text-align: center;'><b>ស្រី</b></td>
+                </tr>
+                <tr bgcolor='{row_normal}'>
+                    <td style='color: {row_text};'>សរុបចំនួនអ្នកប្រើសេវា</td>
+                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["under5"])}</td>
+                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["age_5_14"])}</td>
+                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["age_15_plus"])}</td>
+                    <td style='text-align: center; color: {row_text};'><b>{fmt_num(service_use_summary["total"])}</b></td>
+                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["male"])}</td>
+                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["female"])}</td>
+                </tr>
+                <tr bgcolor='{row_alt}'>
+                    <td style='color: {row_text};'>ក្នុងនោះ ករណីថ្មី:សរុប</td>
+                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["new_under5"])}</td>
+                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["new_age_5_14"])}</td>
+                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["new_age_15_plus"])}</td>
+                    <td style='text-align: center; color: {row_text};'><b>{fmt_num(service_use_summary["new_total"])}</b></td>
+                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["new_male"])}</td>
+                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["new_female"])}</td>
+                </tr>
+                <tr bgcolor='{table_bg}'>
+                    <td colspan='7' style='color: {row_text}; font-size: 11px; font-style: italic;'>
+                        សម្គាល់៖ ០-៤ឆ្នាំ = ០-២៩ថ្ងៃ + ២៩ថ្ងៃ-១១ខែ + ១-៤ឆ្នាំ, ៥-១៤ឆ្នាំ = ក្រុមអាយុ ៥-១៤ឆ្នាំ, ១៥ឆ្នាំឡើង = ក្រុមអាយុដែលនៅសល់។
+                    </td>
+                </tr>
+            </table>
+            """
             msg = f"""
             <html>
             <body style='background-color: {table_bg}; color: {row_text}; font-family: "{self.current_font}", Arial, sans-serif;'>
@@ -6786,6 +6828,8 @@ class App(QWidget):
                 </tr>
             </table>
 
+            {service_use_summary_html}
+
             <h3 style='color: {comparison_header}; font-size: 18px; margin-top: 20px;'>សរុបចំនួនអ្នកប្រើសេវាតាមប្រភេទជំងឺ ចន្លោះអាយុ និងភេទ</h3>
             <table border='1' cellpadding='4' width='100%' bgcolor='{table_bg}' style='border-collapse: collapse; font-size: 11px;'>
                 <tr bgcolor='{comparison_header}'>
@@ -6855,16 +6899,39 @@ class App(QWidget):
 
             dlg = QDialog(self)
             dlg.setWindowTitle("Detailed Patient Statistics")
-            dlg.setMinimumSize(900, 850)  # Increased size for better viewing
+            screen = QApplication.primaryScreen()
+            available = screen.availableGeometry() if screen else None
+            if available:
+                dlg.resize(int(available.width() * 0.90), int(available.height() * 0.86))
+                dlg.setMinimumSize(min(1180, available.width()), min(760, available.height()))
+            else:
+                dlg.resize(1280, 850)
+                dlg.setMinimumSize(1180, 760)
             layout = QVBoxLayout(dlg)
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            lbl = QLabel(msg)
-            lbl.setWordWrap(True)
-            lbl.setTextFormat(Qt.RichText) # type: ignore
-            lbl.setContentsMargins(20, 20, 20, 20)
-            scroll.setWidget(lbl)
-            layout.addWidget(scroll)
+            layout.setContentsMargins(8, 8, 8, 8)
+            layout.setSpacing(8)
+
+            report_view = QTextBrowser()
+            report_view.setReadOnly(True)
+            report_view.setOpenExternalLinks(False)
+            report_view.setLineWrapMode(QTextEdit.NoWrap)
+            report_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)  # type: ignore[attr-defined]
+            report_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)  # type: ignore[attr-defined]
+            report_view.verticalScrollBar().setSingleStep(28)
+            report_view.verticalScrollBar().setPageStep(360)
+            report_view.horizontalScrollBar().setSingleStep(36)
+            report_view.document().setTextWidth(2200)
+            report_view.setHtml(msg)
+            report_view.setStyleSheet("""
+                QTextBrowser {
+                    background-color: #2c3e50;
+                    color: #ecf0f1;
+                    border: 1px solid #0fbcf9;
+                    border-radius: 6px;
+                    padding: 8px;
+                }
+            """)
+            layout.addWidget(report_view, 1)
 
             # Export buttons
             btn_layout = QHBoxLayout()

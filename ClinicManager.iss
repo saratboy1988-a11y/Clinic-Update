@@ -4,7 +4,7 @@
 
 #define Unicode
 #define MyAppName "Clinic Management System"
-#define MyAppVersion "2.0.18"
+#define MyAppVersion "2.1.0"
 #define MyAppPublisher "NOU SARAT"
 #define MyAppExeName "ClinicManager.exe"
 #define MyAppURL "https://t.me/nousarat"
@@ -39,6 +39,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; OnlyBelowVersion: 6.1; Check: not IsAdminInstallMode
+Name: "installgit"; Description: "Install Git for Windows (needed for Cloud Upload)"; GroupDescription: "Optional dependencies:"; Flags: checkedonce; Check: not IsGitInstalled
 
 ; ឯកសារដែលត្រូវដាក់បញ្ចូល
 [Files]
@@ -47,6 +48,9 @@ Source: "dist\ClinicManager\*"; DestDir: "{app}"; Flags: ignoreversion recursesu
 
 ; Icon file (សម្រាប់ Desktop Shortcut)
 Source: "healthcare.ico"; DestDir: "{app}"; Flags: ignoreversion
+
+; Optional Git for Windows installer. Put the Git installer at deps\GitInstaller.exe before building.
+Source: "deps\GitInstaller.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; Tasks: installgit; Check: not IsGitInstalled
 
 ; ឯកសារបម្រុង (បើមាន) - Comment ចោលសិន ព្រោះ clinic.db អាចនឹងមិនមាន
 ; Source: "dist\clinic.db"; DestDir: "{app}"; Flags: ignoreversion uninsneveruninstall
@@ -66,10 +70,21 @@ Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Fil
 
 ; ការងារពេលចាប់ផ្តើម
 [Run]
+Filename: "{tmp}\GitInstaller.exe"; Parameters: "/VERYSILENT /NORESTART /NOCANCEL /SP-"; StatusMsg: "Installing Git for Windows..."; Flags: waituntilterminated; Tasks: installgit; Check: not IsGitInstalled
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 ; ការកំណត់មុនពេលដំឡើង
 [Code]
+function IsGitInstalled(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result :=
+    RegKeyExists(HKLM, 'SOFTWARE\GitForWindows') or
+    RegKeyExists(HKCU, 'SOFTWARE\GitForWindows') or
+    (Exec('cmd.exe', '/C git --version', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0));
+end;
+
 function InitializeSetup(): Boolean;
 var
   ResultCode: Integer;

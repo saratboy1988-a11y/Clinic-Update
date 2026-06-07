@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "api_base_url": "https://script.google.com/macros/s/AKfycbw-i8GKNcKIXhjLXNIEzhw4XCQnNc2Ad45_U8YUIimSOdAJvCZuKw7lj98uypTtcHEF/exec",
+  "app_token": "change-this-public-app-token",
+  "strict_online": false,
+  "timeout_seconds": 15
+}

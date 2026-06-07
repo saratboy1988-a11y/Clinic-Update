@@ -5,6 +5,7 @@ import ctypes
 import json
 import urllib.request
 import urllib.error
+import urllib.parse
 import subprocess
 import zipfile
 import tempfile
@@ -61,6 +62,10 @@ from constants import (
 
 # Get version from centralized version manager
 APP_VERSION = get_version()
+APP_NAME = "ClinicManager"
+ONLINE_LICENSE_CONFIG_FILE = "license_server_config.json"
+ONLINE_LICENSE_STORE_FILE = "online_license.json"
+ONLINE_LICENSE_GRACE_DAYS = 3
 import shutil
 import sqlite3
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QVBoxLayout,
@@ -269,6 +274,8 @@ def style_progress_dialog(progress):
 
 def build_patient_share_database(target_db_path, patient_rows):
     """Create a share-safe database containing only the patient table/data."""
+    if os.path.exists(target_db_path):
+        os.remove(target_db_path)
     with sqlite3.connect(target_db_path) as temp_conn:
         temp_cur = temp_conn.cursor()
 
@@ -315,6 +322,22 @@ def get_clinic_appdata_dir(fallback_dir=None):
 
 def get_writable_settings_file(fallback_dir):
     return os.path.join(get_clinic_appdata_dir(fallback_dir), 'settings.ini')
+
+
+def get_config_path(filename):
+    return os.path.join(get_clinic_appdata_dir(os.path.dirname(os.path.abspath(__file__))), filename)
+
+
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS  # type: ignore[attr-defined]
+    except Exception:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+
+    path = os.path.join(base_path, relative_path)
+    if not os.path.exists(path) and getattr(sys, 'frozen', False):
+        path = os.path.join(os.path.dirname(sys.executable), relative_path)
+    return path
 
 
 def create_database_backup(backup_dir, prefix="clinic_backup_upload"):
@@ -371,6 +394,235 @@ def get_machine_id():
         return "UNKNOWN-MACHINE-ID"
 
 
+def load_online_license_config():
+    default_config = {
+        "enabled": False,
+        "api_base_url": "",
+        "app_token": "",
+        "strict_online": False,
+        "timeout_seconds": 15,
+    }
+    config_paths = [
+        get_config_path(ONLINE_LICENSE_CONFIG_FILE),
+        resource_path(ONLINE_LICENSE_CONFIG_FILE),
+    ]
+
+    for path in config_paths:
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    merged = default_config.copy()
+                    merged.update(data)
+                    merged["api_base_url"] = str(merged.get("api_base_url", "")).rstrip("/")
+                    return merged
+        except Exception:
+            continue
+
+    return default_config
+
+
+def online_license_is_enabled(config=None):
+    config = config or load_online_license_config()
+    return bool(config.get("enabled") and config.get("api_base_url"))
+
+
+def online_license_is_strict(config=None):
+    config = config or load_online_license_config()
+    return bool(online_license_is_enabled(config) and config.get("strict_online"))
+
+
+def _license_api_post(path, payload, config=None):
+    config = config or load_online_license_config()
+    base_url = str(config.get("api_base_url", "")).rstrip("/")
+    if not base_url:
+        return False, {"message": "License server is not configured."}
+
+    payload = dict(payload)
+    is_google_apps_script = "script.google.com/macros/s/" in base_url
+    if is_google_apps_script:
+        url = base_url
+        payload["_path"] = path
+        app_token = str(config.get("app_token", "")).strip()
+        if app_token:
+            payload["_app_token"] = app_token
+    else:
+        url = f"{base_url}{path}"
+
+    body = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": f"{APP_NAME}/{APP_VERSION}",
+    }
+    app_token = str(config.get("app_token", "")).strip()
+    if app_token and not is_google_apps_script:
+        headers["Authorization"] = f"Bearer {app_token}"
+
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    timeout = int(config.get("timeout_seconds") or 15)
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            response_body = response.read().decode("utf-8", errors="replace")
+            if not response_body.strip():
+                return False, {"message": "License server returned an empty response."}
+            try:
+                return True, json.loads(response_body)
+            except json.JSONDecodeError:
+                message = "License server returned a non-JSON response."
+                if is_google_apps_script and (
+                    "Script function not found: doPost" in response_body or "doPost" in response_body
+                ):
+                    message = (
+                        "Google Apps Script does not have doPost(e). Paste google_apps_script_license_api.gs "
+                        "into Apps Script, save, and deploy a new Web app version."
+                    )
+                elif is_google_apps_script and "Google Apps Script" in response_body:
+                    message = "Google Apps Script returned an HTML error page. Check deployment and permissions."
+                return False, {"message": message}
+    except urllib.error.HTTPError as e:
+        if is_google_apps_script and e.code in (401, 403):
+            return False, {
+                "message": (
+                    "Google Apps Script denied access. Deploy the script as a Web app with "
+                    "'Execute as: Me' and 'Who has access: Anyone', then copy the /exec URL again."
+                )
+            }
+        try:
+            error_body = e.read().decode("utf-8", errors="replace")
+            if not error_body.strip():
+                return False, {"message": str(e)}
+            try:
+                data = json.loads(error_body)
+            except json.JSONDecodeError:
+                return False, {"message": f"License server returned HTTP {e.code} with a non-JSON response."}
+            if isinstance(data, dict) and isinstance(data.get("detail"), dict):
+                return False, data["detail"]
+            return False, data
+        except Exception:
+            return False, {"message": str(e)}
+    except Exception as e:
+        return False, {"message": str(e), "network_error": True}
+
+
+def _online_license_config_fingerprint(config=None):
+    config = config or load_online_license_config()
+    raw = f"{config.get('api_base_url', '')}|{config.get('app_token', '')}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _online_token_matches_machine(token, machine_id):
+    parts = str(token or "").split("|")
+    return len(parts) >= 3 and parts[1] == machine_id
+
+
+def _online_license_not_expired(saved):
+    expires_at = saved.get("expires_at")
+    if not expires_at:
+        return True
+    try:
+        expires = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        now = datetime.now(expires.tzinfo) if expires.tzinfo else datetime.now()
+        return now <= expires
+    except Exception:
+        return False
+
+
+def save_online_license(data, machine_id=None, config=None):
+    payload = dict(data)
+    payload["last_valid_at"] = datetime.now().isoformat()
+    if machine_id:
+        payload["activation_machine_id"] = machine_id
+    payload["config_fingerprint"] = _online_license_config_fingerprint(config)
+    with open(get_config_path(ONLINE_LICENSE_STORE_FILE), "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+
+def load_saved_online_license():
+    path = get_config_path(ONLINE_LICENSE_STORE_FILE)
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def activate_online_license(email, license_key, machine_id):
+    config = load_online_license_config()
+    if not online_license_is_enabled(config):
+        return False, "Online license server is not configured.", {}
+
+    ok, response = _license_api_post(
+        "/api/v1/licenses/activate",
+        {
+            "email": email,
+            "license_key": license_key,
+            "machine_id": machine_id,
+            "app_version": APP_VERSION,
+        },
+        config,
+    )
+    if ok and response.get("ok"):
+        save_online_license(response, machine_id, config)
+        return True, response.get("message", "Activated"), response
+
+    return False, response.get("message", "Online activation failed."), response
+
+
+def validate_saved_online_license(machine_id):
+    config = load_online_license_config()
+    if not online_license_is_enabled(config):
+        return False, "Online license is disabled."
+
+    saved = load_saved_online_license()
+    token = str(saved.get("token", "")).strip()
+    if not token:
+        return False, "No online license token found."
+    if saved.get("activation_machine_id") and saved.get("activation_machine_id") != machine_id:
+        return False, "Saved online license belongs to another machine."
+    if not _online_token_matches_machine(token, machine_id):
+        return False, "Saved online license token does not match this machine."
+    if saved.get("config_fingerprint") and saved.get("config_fingerprint") != _online_license_config_fingerprint(config):
+        return False, "Saved online license belongs to another license server."
+    if not _online_license_not_expired(saved):
+        return False, "Saved online license expired."
+
+    ok, response = _license_api_post(
+        "/api/v1/licenses/check",
+        {
+            "token": token,
+            "machine_id": machine_id,
+            "app_version": APP_VERSION,
+        },
+        config,
+    )
+    if ok and response.get("ok"):
+        merged = saved.copy()
+        merged.update(response)
+        save_online_license(merged, machine_id, config)
+        return True, response.get("message", "Online license valid.")
+
+    if response.get("network_error"):
+        try:
+            last_valid_at = saved.get("last_valid_at")
+            if last_valid_at:
+                last_dt = datetime.fromisoformat(last_valid_at)
+                if last_dt > datetime.now() + timedelta(minutes=5):
+                    return False, "Saved online license timestamp is invalid."
+                days = (datetime.now() - last_dt).days
+                if days <= ONLINE_LICENSE_GRACE_DAYS:
+                    return True, f"Offline grace period active ({days}/{ONLINE_LICENSE_GRACE_DAYS} days)."
+        except Exception:
+            pass
+
+    return False, response.get("message", "Online license invalid.")
+
+
 class LicenseGeneratorDialog(BaseDialog):
     """ផ្ទាំងសម្រាប់ Admin បង្កើត License Key"""
     def __init__(self):
@@ -419,47 +671,126 @@ class LicenseGeneratorDialog(BaseDialog):
         show_success(self, "បានចម្លង License Key រួចរាល់!")
 
 
+def create_license_contact_links():
+    links = QHBoxLayout()
+    links.setSpacing(12)
+    links.addStretch()
+
+    telegram = QLabel(f'<a href="{TELEGRAM_URL}" style="color: #19d3ff; text-decoration: none;">Telegram</a>')
+    telegram.setOpenExternalLinks(True)
+    telegram.setStyleSheet("background: transparent; font-size: 13px;")
+
+    separator = QLabel("|")
+    separator.setStyleSheet("color: #6c7a89; background: transparent;")
+
+    youtube = QLabel(f'<a href="{YOUTUBE_URL}" style="color: #ff6b6b; text-decoration: none;">YouTube</a>')
+    youtube.setOpenExternalLinks(True)
+    youtube.setStyleSheet("background: transparent; font-size: 13px;")
+
+    links.addWidget(telegram)
+    links.addWidget(separator)
+    links.addWidget(youtube)
+    links.addStretch()
+    return links
+
+
 class LicenseDialog(BaseDialog):
     def __init__(self, machine_id):
-        super().__init__("ចុះឈ្មោះប្រើប្រាស់កម្មវិធី", size=(450, 500))
+        super().__init__("Register License", size=(620, 640),
+                         show_creator_header=False, show_creator_footer=False)
+        self.setMinimumSize(620, 640)
+        self.setMaximumSize(16777215, 16777215)
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)  # type: ignore
-        
+        self.online_config = load_online_license_config()
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #111820;
+                color: #f5f6fa;
+            }
+            QLabel {
+                color: #dfe6e9;
+                font-size: 13px;
+            }
+            QLineEdit {
+                background-color: #1e272e;
+                color: #ffffff;
+                border: 1px solid #485460;
+                border-radius: 6px;
+                padding: 10px 12px;
+                min-height: 30px;
+                selection-background-color: #0fbcf9;
+                selection-color: #000000;
+            }
+            QLineEdit:focus {
+                border: 1px solid #0fbcf9;
+            }
+        """)
+
+        title = QLabel("Register License")
+        title.setAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
+        title.setStyleSheet("font-size: 22px; font-weight: bold; color: #0fbcf9; padding-top: 4px;")
+        subtitle = QLabel("Enter your email and license key to activate this computer.")
+        subtitle.setAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
+        subtitle.setStyleSheet("color: #c8d6e5; font-size: 12px; padding-bottom: 8px;")
+
         self.txt_mid = QLineEdit(machine_id)
         self.txt_mid.setReadOnly(True)
-        self.txt_mid.setStyleSheet(STYLE_AUTO_FIELD)
-        
+        self.txt_mid.setStyleSheet("""
+            background-color: #202a36;
+            color: #ffffff;
+            border: 1px solid #0fbcf9;
+            border-radius: 6px;
+            padding: 10px 12px;
+            font-family: Consolas, monospace;
+            font-weight: bold;
+        """)
+
         btn_copy = create_button(f"{ICON_COPY} Copy Machine ID", COLOR_ACCENT_BLUE, "white", 
                                   lambda: copy_to_clipboard(machine_id))
-        
+
         self.txt_email = QLineEdit()
-        self.txt_email.setPlaceholderText(PLACEHOLDER_EMAIL)
-        
+        self.txt_email.setPlaceholderText("Email")
+
         self.txt_key = QLineEdit()
-        self.txt_key.setPlaceholderText("បញ្ចូលលេខកូដអាជ្ញាប័ណ្ណ (License Key)")
-        
-        btn_activate = create_button("✅ ធ្វើឱ្យសកម្ម (Activate)", COLOR_SUCCESS_GREEN, "white", self.activate)
+        self.txt_key.setPlaceholderText("License Key")
+
+        btn_activate = create_button("Activate", COLOR_SUCCESS_GREEN, "white", self.activate)
+        for btn in (btn_copy, btn_activate):
+            btn.setMinimumHeight(48)
+            btn.setCursor(Qt.PointingHandCursor)  # type: ignore[attr-defined]
+
+        def make_card(title_text, body_widget):
+            card = QFrame()
+            card.setObjectName("licenseCard")
+            card.setFrameShape(QFrame.NoFrame)
+            card.setStyleSheet("""
+                QFrame#licenseCard {
+                    background-color: #18212b;
+                    border: 1px solid #2f3b48;
+                    border-radius: 8px;
+                }
+            """)
+            layout = QVBoxLayout(card)
+            layout.setContentsMargins(14, 10, 14, 14)
+            layout.setSpacing(10)
+            label = QLabel(title_text)
+            label.setStyleSheet("background: transparent; border: none; color: #19d3ff; font-size: 14px; font-weight: bold;")
+            layout.addWidget(label)
+            layout.addWidget(body_widget)
+            return card
         
         # Secret shortcut for Generator (Ctrl+Shift+G)
         self.shortcut_gen = QShortcut(QKeySequence("Ctrl+Shift+G"), self)
         self.shortcut_gen.activated.connect(self.open_generator)
-        
-        # Add to layout
-        self.add_widget(QLabel("លេខកូដកុំព្យូទ័រ (Machine ID):"))
-        self.add_widget(self.txt_mid)
+
+        self.add_widget(title)
+        self.add_widget(subtitle)
+        self.add_widget(make_card("Machine ID", self.txt_mid))
         self.add_widget(btn_copy)
-        
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Sunken)  # type: ignore
-        self.add_widget(line)
-        
-        self.add_widget(QLabel("Email:"))
-        self.add_widget(self.txt_email)
-        self.add_stretch()
-        self.add_widget(QLabel("លេខកូដអាជ្ញាប័ណ្ណ (License Key):"))
-        self.add_widget(self.txt_key)
-        self.add_stretch()
+        self.add_widget(make_card("Email", self.txt_email))
+        self.add_widget(make_card("License Key", self.txt_key))
         self.add_widget(btn_activate)
+        self.add_layout(create_license_contact_links())
     
     def open_generator(self):
         gen = LicenseGeneratorDialog()
@@ -469,8 +800,33 @@ class LicenseDialog(BaseDialog):
         email = self.txt_email.text().strip()
         key = self.txt_key.text().strip()
         mid = self.txt_mid.text()
-        
-        is_valid, msg = validate_license(email, mid, key)
+
+        if online_license_is_enabled(self.online_config):
+            if not email:
+                show_warning(self, "Please enter your email before online activation.")
+                return
+
+            is_valid, msg, _ = activate_online_license(email, key, mid)
+            if is_valid:
+                lic_info = db.get_license_info()
+                install_date = lic_info[1] if lic_info else datetime.now().strftime("%Y-%m-%d")
+                db.save_license_info(install_date, key, email, mid)
+                show_success(self, f"{MSG_LICENSE_ACTIVATED}\nOnline activation successful!")
+                self.accept()
+                return
+
+            if online_license_is_strict(self.online_config):
+                show_warning(self, f"Online activation failed: {msg}")
+                return
+
+            fallback_valid, fallback_msg = validate_license(email, mid, key)
+            if not fallback_valid:
+                show_warning(self, f"Online activation failed: {msg}")
+                return
+            is_valid, msg = fallback_valid, fallback_msg
+        else:
+            is_valid, msg = validate_license(email, mid, key)
+
         if is_valid:
             # Save to DB
             lic_info = db.get_license_info()
@@ -480,6 +836,181 @@ class LicenseDialog(BaseDialog):
             self.accept()
         else:
             show_warning(self, f"{MSG_LICENSE_INVALID}: {msg}")
+
+
+class LicenseStatusDialog(BaseDialog):
+    def __init__(self, parent=None):
+        super().__init__("License & Register", size=(720, 700),
+                         show_creator_header=False, show_creator_footer=False)
+        self.setMinimumSize(720, 700)
+        self.setMaximumSize(16777215, 16777215)
+        self.parent_app = parent
+        self.machine_id = get_machine_id()
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #111820;
+                color: #f5f6fa;
+            }
+            QLabel {
+                color: #dfe6e9;
+                font-size: 13px;
+            }
+            QLineEdit {
+                background-color: #1e272e;
+                color: #ffffff;
+                border: 1px solid #485460;
+                border-radius: 6px;
+                padding: 10px 12px;
+                min-height: 30px;
+                selection-background-color: #0fbcf9;
+                selection-color: #000000;
+            }
+        """)
+
+        title = QLabel("License & Register")
+        title.setAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
+        title.setStyleSheet("font-size: 22px; font-weight: bold; color: #0fbcf9; padding-top: 4px;")
+        subtitle = QLabel("Manage this computer's license status and registration.")
+        subtitle.setAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
+        subtitle.setStyleSheet("color: #c8d6e5; font-size: 12px; padding-bottom: 8px;")
+
+        self.txt_mid = QLineEdit(self.machine_id)
+        self.txt_mid.setReadOnly(True)
+        self.txt_mid.setStyleSheet("""
+            background-color: #202a36;
+            color: #ffffff;
+            border: 1px solid #0fbcf9;
+            border-radius: 6px;
+            padding: 10px 12px;
+            font-family: Consolas, monospace;
+            font-weight: bold;
+        """)
+
+        self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+        self.status_label.setMinimumHeight(138)
+        self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)  # type: ignore[attr-defined]
+
+        def make_card(title_text, body_widget):
+            card = QFrame()
+            card.setObjectName("licenseCard")
+            card.setFrameShape(QFrame.NoFrame)
+            card.setStyleSheet("""
+                QFrame#licenseCard {
+                    background-color: #18212b;
+                    border: 1px solid #2f3b48;
+                    border-radius: 8px;
+                }
+            """)
+            layout = QVBoxLayout(card)
+            layout.setContentsMargins(14, 10, 14, 14)
+            layout.setSpacing(10)
+            label = QLabel(title_text)
+            label.setStyleSheet("background: transparent; border: none; color: #19d3ff; font-size: 14px; font-weight: bold;")
+            layout.addWidget(label)
+            layout.addWidget(body_widget)
+            return card
+
+        btn_register = create_button("Register / Activate", COLOR_SUCCESS_GREEN, "white", self.open_register)
+        btn_check = create_button("Check License", COLOR_ACCENT_BLUE, "black", self.check_license)
+        btn_copy = create_button(f"{ICON_COPY} Copy Machine ID", "#576574", "white",
+                                 lambda: copy_to_clipboard(self.machine_id))
+        btn_remove = create_button("Remove Saved License", COLOR_ERROR_RED_ALT, "white", self.remove_saved_license)
+        for btn in (btn_register, btn_check, btn_copy, btn_remove):
+            btn.setMinimumHeight(50)
+            btn.setCursor(Qt.PointingHandCursor)  # type: ignore[attr-defined]
+
+        row1 = QHBoxLayout()
+        row1.setSpacing(10)
+        row1.addWidget(btn_register)
+        row1.addWidget(btn_check)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(10)
+        row2.addWidget(btn_copy)
+        row2.addWidget(btn_remove)
+
+        self.add_widget(title)
+        self.add_widget(subtitle)
+        self.add_widget(make_card("Machine ID", self.txt_mid))
+        self.add_widget(make_card("Status", self.status_label))
+        self.add_layout(row1)
+        self.add_layout(row2)
+        self.add_layout(create_license_contact_links())
+
+        self.refresh_status()
+
+    def _get_license_status_text(self):
+        online_valid, online_msg = validate_saved_online_license(self.machine_id)
+        if online_valid:
+            saved = load_saved_online_license()
+            license_key = saved.get("license_key", "")
+            expires_at = saved.get("expires_at") or "Lifetime"
+            return True, f"License valid.\nKey: {license_key}\nExpires: {expires_at}"
+
+        lic_info = db.get_license_info()
+        if lic_info and lic_info[2]:
+            valid, msg = validate_license(lic_info[3], self.machine_id, lic_info[2])
+            if valid:
+                return True, f"Offline license valid.\nExpires: {msg}"
+            return False, f"Saved offline license invalid: {msg}"
+
+        return False, "No registered license found. Please register to use this application."
+
+    def refresh_status(self):
+        valid, text = self._get_license_status_text()
+        self.status_label.setText(text)
+        color = "#123524" if valid else "#3d2f16"
+        border = "#05c46b" if valid else "#ffa801"
+        self.status_label.setStyleSheet(
+            f"padding: 12px; background-color: {color}; border: 1px solid {border}; "
+            "border-radius: 6px; color: white; font-weight: bold; font-size: 14px; line-height: 1.35;"
+        )
+        return valid, text
+
+    def open_register(self):
+        dlg = LicenseDialog(self.machine_id)
+        if dlg.exec_() == QDialog.Accepted:
+            self.refresh_status()
+
+    def check_license(self):
+        valid, text = self.refresh_status()
+        if valid:
+            QMessageBox.information(self, "License", text)
+        else:
+            QMessageBox.warning(self, "License", text)
+
+    def remove_saved_license(self):
+        reply = QMessageBox.question(
+            self,
+            "Remove License",
+            "Remove saved license from this computer?\n\nលុប License ដែលបានរក្សាទុកចេញពីម៉ាស៊ីននេះ?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        removed = False
+        for path in (get_config_path(ONLINE_LICENSE_STORE_FILE),):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+                    removed = True
+            except Exception as e:
+                QMessageBox.warning(self, "License", f"Could not remove saved online license:\n{e}")
+                return
+
+        lic_info = db.get_license_info()
+        if lic_info:
+            db.save_license_info(lic_info[1], "", "", self.machine_id)
+            removed = True
+
+        self.refresh_status()
+        if removed:
+            QMessageBox.information(self, "License", "Saved license removed.")
+        else:
+            QMessageBox.information(self, "License", "No saved license was found.")
 
 
 class ChangePasswordDialog(BaseDialog):
@@ -922,6 +1453,126 @@ class TelegramBotSetupDialog(BaseDialog):
             QMessageBox.critical(self, "❌ កំហុស", f"មិនអាចតភ្ជាប់បានទេ: {str(e)}")
 
 
+class CloudUploadReviewDialog(BaseDialog):
+    def __init__(self, patient_rows, parent=None, period_label=""):
+        super().__init__("ពិនិត្យទិន្នន័យមុន Upload", size=(1180, 720),
+                         show_creator_header=False, show_creator_footer=False,
+                         parent=parent)
+        self.setMinimumSize(980, 620)
+        self.setMaximumSize(16777215, 16777215)
+        self.patient_rows = [list(row) for row in patient_rows]
+        self.headers = [
+            "ID", "កាលបរិច្ឆេទ", "លេខរៀង", "លេខប័ណ្ណ", "ឈ្មោះ", "អាណាព្យាបាល",
+            "អាយុ", "ភេទ", "តំបន់", "ផ្ទៃពោះ", "អាសយដ្ឋាន", "ទូរស័ព្ទ",
+            "បញ្ជូនមកពី", "ករណីជំងឺ", "រោគសញ្ញា", "អមវេជ្ជសាស្រ្ត",
+            "រោគវិនិច្ឆ័យ", "ព្យាបាល", "IMCI", "អាហារូបត្ថម្ភ", "បញ្ជូនទៅ",
+            "សេវា", "កំណត់សម្គាល់", "ប្រភេទអ្នកជំងឺ", "Branch"
+        ]
+
+        layout = self.content_layout
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        title = QLabel(f"ពិនិត្យមុនផ្ញើទៅ Cloud - {period_label}")
+        title.setFont(QFont(get_khmer_font(), 15, QFont.Bold))
+        title.setStyleSheet("color: #0fbcf9;")
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        hint = QLabel("អ្នកអាចកែ cell ឬលុប row មុន Upload។ ការកែនេះសម្រាប់ file ដែលផ្ញើទៅ Cloud ប៉ុណ្ណោះ មិនប៉ះ database ដើមទេ។")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #d2dae2; background-color: #1e272e; padding: 8px; border-radius: 6px;")
+        layout.addWidget(hint)
+
+        self.count_label = QLabel()
+        self.count_label.setStyleSheet("color: #05c46b; font-weight: bold;")
+        layout.addWidget(self.count_label)
+
+        self.review_table = QTableWidget()
+        self.review_table.setColumnCount(len(self.headers))
+        self.review_table.setHorizontalHeaderLabels(self.headers)
+        self.review_table.setAlternatingRowColors(True)
+        self.review_table.setSelectionBehavior(QTableWidget.SelectRows)  # type: ignore[attr-defined]
+        self.review_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #111820;
+                alternate-background-color: #1e272e;
+                color: #ffffff;
+                gridline-color: #485460;
+            }
+            QTableWidget::item:selected {
+                background-color: #0fbcf9;
+                color: #000000;
+            }
+            QHeaderView::section {
+                background-color: #2f3640;
+                color: #ffffff;
+                padding: 6px;
+                border: none;
+                font-weight: bold;
+            }
+        """)
+        layout.addWidget(self.review_table)
+
+        buttons = QHBoxLayout()
+        btn_delete = create_button("លុប Row ដែលបានជ្រើស", COLOR_ERROR_RED_ALT, "white", self.delete_selected_rows)
+        btn_cancel = create_button("បោះបង់ Upload", "#7f8c8d", "white", self.reject)
+        btn_continue = create_button("បន្ត Upload", COLOR_SUCCESS_GREEN, "white", self.accept)
+        for btn in (btn_delete, btn_cancel, btn_continue):
+            btn.setMinimumHeight(42)
+        buttons.addWidget(btn_delete)
+        buttons.addStretch()
+        buttons.addWidget(btn_cancel)
+        buttons.addWidget(btn_continue)
+        layout.addLayout(buttons)
+
+        self.populate_table()
+
+    def populate_table(self):
+        self.review_table.setRowCount(len(self.patient_rows))
+        for row_idx, row in enumerate(self.patient_rows):
+            for col_idx in range(len(self.headers)):
+                value = row[col_idx] if col_idx < len(row) else ""
+                item = QTableWidgetItem("" if value is None else str(value))
+                if col_idx == 0:
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)  # type: ignore[attr-defined]
+                self.review_table.setItem(row_idx, col_idx, item)
+        self.review_table.resizeColumnsToContents()
+        self.review_table.horizontalHeader().setStretchLastSection(True)
+        self.update_count_label()
+
+    def update_count_label(self):
+        self.count_label.setText(f"ចំនួនត្រូវ Upload: {self.review_table.rowCount()} នាក់")
+
+    def delete_selected_rows(self):
+        rows = sorted({index.row() for index in self.review_table.selectedIndexes()}, reverse=True)
+        if not rows:
+            QMessageBox.information(self, "Info", "សូមជ្រើសរើស row ដែលចង់លុបចេញពី Upload។")
+            return
+        reply = QMessageBox.question(
+            self,
+            "លុប Row",
+            f"លុប {len(rows)} row ចេញពី package Upload មែនទេ?\n\nDatabase ដើមមិនត្រូវបានប៉ះពាល់ទេ។",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        for row_idx in rows:
+            self.review_table.removeRow(row_idx)
+        self.update_count_label()
+
+    def get_patient_rows(self):
+        rows = []
+        for row_idx in range(self.review_table.rowCount()):
+            row = []
+            for col_idx in range(len(self.headers)):
+                item = self.review_table.item(row_idx, col_idx)
+                row.append(item.text() if item else "")
+            rows.append(row)
+        return rows
+
+
 class CloudSyncHelpDialog(BaseDialog):
     """Dialog ដែលបង្ហាញការណែនាំអំពីរបៀបបង្កើត URL សម្រាប់ Cloud Sync"""
     def __init__(self, parent=None):
@@ -1176,6 +1827,8 @@ class LoginDialog(BaseDialog):
         # កំណត់ current_user (នឹងត្រូវបានកំណត់ពេល Login ជោគជ័យ)
         self.current_user = ""
         self.user_context = None
+        self.branch_code = "MAIN"
+        self.active_branch_code = None
 
         # Load settings
         self.config = configparser.ConfigParser()
@@ -1355,78 +2008,61 @@ class LoginDialog(BaseDialog):
         """)
         self.btn_signup.clicked.connect(self.show_signup)
 
-        # Sync button
-        self.btn_sync = QPushButton("☁️ ទាញយកទិន្នន័យពី Cloud")
-        self.btn_sync.setFixedHeight(32 if compact_login else 35)
-        self.btn_sync.setFont(QFont(khmer_font_name, 12, QFont.Bold))
-        self.btn_sync.setCursor(hand_cursor)
-        self.btn_sync.setStyleSheet("""
-            QPushButton {
+        def style_cloud_button(button, start_color, end_color, hover_start, hover_end):
+            button.setMinimumHeight(42 if compact_login else 46)
+            button.setMinimumWidth(130)
+            button.setFont(QFont(get_khmer_font(), 11, QFont.Bold))
+            button.setCursor(hand_cursor)
+            button.setStyleSheet(f"""
+            QPushButton {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #485563, stop:1 #29323c);
-                color: #ecf0f1;
+                    stop:0 {start_color}, stop:1 {end_color});
+                color: white;
                 font-weight: bold;
                 font-size: 12px;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
+                border-radius: 7px;
+                padding: 7px 10px;
+                border: 1px solid rgba(255,255,255,0.14);
+            }}
+            QPushButton:hover {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #566573, stop:1 #34495e);
-            }
+                    stop:0 {hover_start}, stop:1 {hover_end});
+            }}
+            QPushButton:pressed {{
+                padding-top: 8px;
+                padding-left: 11px;
+            }}
         """)
+
+        # Cloud action buttons
+        self.btn_sync = QPushButton("☁️ ទាញពី Cloud")
+        style_cloud_button(self.btn_sync, "#3d5368", "#25313d", "#4d657d", "#314252")
         self.btn_sync.clicked.connect(self.sync_data_initial)
 
-        # Help button for Cloud Sync
-        self.btn_sync_help = QPushButton("❓ ជំនួយ")
-        self.btn_sync_help.setFixedHeight(32 if compact_login else 35)
-        self.btn_sync_help.setFont(QFont(get_khmer_font(), 12, QFont.Bold))
-        self.btn_sync_help.setCursor(Qt.PointingHandCursor)  # type: ignore[attr-defined]
-        self.btn_sync_help.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #f39c12, stop:1 #e67e22);
-                color: white;
-                font-weight: bold;
-                font-size: 12px;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #e67e22, stop:1 #d35400);
-            }
-        """)
-        self.btn_sync_help.clicked.connect(self.show_cloud_sync_help)
-
-        # Upload to Cloud button
         self.btn_upload = QPushButton("⬆️ ផ្ញើទៅ Cloud")
-        self.btn_upload.setFixedHeight(32 if compact_login else 35)
-        self.btn_upload.setFont(QFont(get_khmer_font(), 12, QFont.Bold))
-        self.btn_upload.setCursor(Qt.PointingHandCursor)  # type: ignore[attr-defined]
-        self.btn_upload.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #05c46b, stop:1 #06bc5c);
-                color: white;
-                font-weight: bold;
-                font-size: 12px;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #06bc5c, stop:1 #05b360);
-            }
-        """)
+        style_cloud_button(self.btn_upload, "#00b894", "#00a36c", "#11cfa6", "#00b77a")
         self.btn_upload.clicked.connect(self.upload_to_cloud)
+
+        self.btn_edit_cloud = QPushButton("✏️ កែ Cloud")
+        style_cloud_button(self.btn_edit_cloud, "#0984e3", "#006bbf", "#1e90ff", "#0875cf")
+        self.btn_edit_cloud.clicked.connect(self.edit_uploaded_cloud_data)
+
+        self.btn_sync_help = QPushButton("❓ ជំនួយ")
+        style_cloud_button(self.btn_sync_help, "#f39c12", "#d87900", "#ffad22", "#ec8d00")
+        self.btn_sync_help.clicked.connect(self.show_cloud_sync_help)
 
         button_layout.addWidget(self.btn_login)
         button_layout.addWidget(self.btn_signup)
 
-        # Sync buttons in a sub-layout
-        sync_layout = QVBoxLayout() if compact_login else QHBoxLayout()
-        sync_layout.addWidget(self.btn_sync)
-        sync_layout.addWidget(self.btn_upload)
-        sync_layout.addWidget(self.btn_sync_help)
-        button_layout.addLayout(sync_layout)
+        # Cloud actions are available from the main app Cloud Sync menu after login.
+        sync_layout = QGridLayout()
+        sync_layout.setSpacing(8)
+        sync_layout.addWidget(self.btn_sync, 0, 0)
+        sync_layout.addWidget(self.btn_upload, 0, 1)
+        sync_layout.addWidget(self.btn_edit_cloud, 1, 0)
+        sync_layout.addWidget(self.btn_sync_help, 1, 1)
+        sync_layout.setColumnStretch(0, 1)
+        sync_layout.setColumnStretch(1, 1)
 
         layout.addWidget(button_container)
 
@@ -1547,6 +2183,276 @@ class LoginDialog(BaseDialog):
         # Upload ទិន្នន័យ
         self._upload_to_github(repo_url)
 
+    def edit_uploaded_cloud_data(self):
+        """Download an uploaded Cloud database, edit rows, then upload it back."""
+        if not self._check_git_installed():
+            QMessageBox.critical(
+                self,
+                "❌ មិនមាន Git",
+                "Git មិនទាន់បានដំឡើងលើកុំព្យូទ័រនេះទេ!\n\n"
+                "សូមដំឡើង Git មុនពេលកែទិន្នន័យ Cloud:\n"
+                "https://git-scm.com/downloads"
+            )
+            return
+
+        repo_url = self.config.get('CATEGORIES', 'cloud_sync_repo_url', fallback="").strip()
+        if not repo_url:
+            reply = QMessageBox.question(
+                self,
+                "⚙️ មិនមាន GitHub Repository",
+                "ត្រូវកំណត់ GitHub Repository URL មុនពេលកែទិន្នន័យ Cloud។\n\n"
+                "តើចង់កំណត់ឥឡូវនេះទេ?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self.show_github_setup()
+            return
+
+        if "clinic-update" in repo_url.lower():
+            QMessageBox.critical(
+                self,
+                "❌ Repository មិនត្រឹមត្រូវ",
+                "Repository នេះសម្រាប់ Update កម្មវិធី មិនមែនសម្រាប់ Cloud Sync ទេ។\n\n"
+                "សូមកំណត់ repository ផ្សេងសម្រាប់ទិន្នន័យ Cloud Sync។"
+            )
+            self.show_github_setup()
+            return
+
+        download_file_name, period_label, ok = self._get_cloud_download_period_choice()
+        if not ok:
+            return
+
+        if download_file_name:
+            cloud_url = self._github_repo_file_raw_url(repo_url, download_file_name)
+            upload_file_name = download_file_name
+        else:
+            saved_url = self.config.get('CATEGORIES', 'cloud_sync_url', fallback="").strip()
+            cloud_url, url_ok = self._get_cloud_sync_url_input(saved_url)
+            if not url_ok or not cloud_url.strip():
+                return
+            cloud_url = cloud_url.strip()
+            parsed_path = urllib.parse.urlparse(cloud_url).path
+            upload_file_name = os.path.basename(parsed_path) or "clinic_full.db"
+            if not upload_file_name.lower().endswith(".db"):
+                upload_file_name = "clinic_full.db"
+
+        if not cloud_url:
+            QMessageBox.warning(
+                self,
+                "⚠️ URL មិនត្រឹមត្រូវ",
+                "មិនអាចបង្កើត Cloud URL ពី GitHub Repository បានទេ។\n\n"
+                "សូមពិនិត្យ GitHub Repository URL ម្ដងទៀត។"
+            )
+            return
+
+        ok_url, url_error = self._preflight_cloud_sync_url(cloud_url)
+        if not ok_url:
+            saved_url = self.config.get('CATEGORIES', 'cloud_sync_url', fallback="").strip()
+            if download_file_name and saved_url and saved_url != cloud_url:
+                reply = QMessageBox.question(
+                    self,
+                    "⚠️ រក file មិនឃើញ",
+                    f"រកមិនឃើញ file នេះនៅ Cloud:\n{download_file_name}\n\n"
+                    "វាអាចមិនទាន់បាន Upload ឬ file period ចាស់ត្រូវបានជំនួសដោយ Upload ថ្មី។\n\n"
+                    "តើចង់បើក file ចុងក្រោយដែលបាន Upload វិញទេ?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    cloud_url = saved_url
+                    parsed_path = urllib.parse.urlparse(cloud_url).path
+                    upload_file_name = os.path.basename(parsed_path) or upload_file_name
+                    period_label = "Cloud file ចុងក្រោយ"
+                    ok_url, url_error = self._preflight_cloud_sync_url(cloud_url)
+                else:
+                    return
+            if not ok_url:
+                QMessageBox.warning(self, "⚠️ មិនអាចទាញ Cloud File", url_error)
+                return
+
+        progress = None
+        download_temp_dir = None
+        temp_git_dir = None
+        cloud_backup_path = ""
+        try:
+            progress = QProgressDialog("កំពុងទាញទិន្នន័យពី Cloud...", "បោះបង់", 0, 100, self)
+            style_progress_dialog(progress)
+            progress.setWindowTitle("✏️ កែទិន្នន័យ Cloud")
+            progress.setWindowModality(Qt.WindowModal)  # type: ignore[attr-defined]
+            progress.setMinimumDuration(0)
+            progress.setAutoClose(False)
+            progress.show()
+            QApplication.processEvents()
+
+            temp_root = os.path.join(tempfile.gettempdir(), "ClinicManager")
+            os.makedirs(temp_root, exist_ok=True)
+            download_temp_dir = tempfile.mkdtemp(prefix="cloud_edit_download_", dir=temp_root)
+            downloaded_db = os.path.join(download_temp_dir, upload_file_name)
+
+            progress.setValue(15)
+            urllib.request.urlretrieve(cloud_url, downloaded_db)
+
+            progress.setValue(30)
+            progress.setLabelText("កំពុងពិនិត្យ database...")
+            QApplication.processEvents()
+
+            if not self._validate_sqlite_file(downloaded_db):
+                progress.close()
+                QMessageBox.critical(
+                    self,
+                    "❌ File មិនត្រឹមត្រូវ",
+                    "File ដែលទាញពី Cloud មិនមែនជា SQLite database ត្រឹមត្រូវទេ។"
+                )
+                return
+
+            os.makedirs(self.backup_dir, exist_ok=True)
+            backup_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_backup_name = os.path.splitext(upload_file_name)[0]
+            cloud_backup_path = os.path.join(self.backup_dir, f"cloud_before_edit_{safe_backup_name}_{backup_stamp}.db")
+            shutil.copy2(downloaded_db, cloud_backup_path)
+
+            with sqlite3.connect(downloaded_db) as conn:
+                patient_rows = conn.execute("SELECT * FROM patient ORDER BY id ASC").fetchall()
+
+            progress.setValue(45)
+            progress.close()
+
+            if not patient_rows:
+                QMessageBox.information(
+                    self,
+                    "📭 គ្មានទិន្នន័យ",
+                    "Cloud file នេះមិនមានទិន្នន័យអ្នកជំងឺសម្រាប់កែទេ។"
+                )
+                return
+
+            review_dialog = CloudUploadReviewDialog(patient_rows, self, f"កែ Cloud - {period_label}")
+            if review_dialog.exec_() != QDialog.Accepted:
+                return
+
+            edited_rows = review_dialog.get_patient_rows()
+            if not edited_rows:
+                reply = QMessageBox.question(
+                    self,
+                    "⚠️ លុបទិន្នន័យទាំងអស់?",
+                    "អ្នកបានលុប row ទាំងអស់ចេញ។\n\n"
+                    "តើចង់ Upload database ទទេត្រឡប់ទៅ Cloud មែនទេ?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply != QMessageBox.Yes:
+                    return
+
+            progress = QProgressDialog("កំពុង Upload ទិន្នន័យដែលបានកែ...", "បោះបង់", 0, 100, self)
+            style_progress_dialog(progress)
+            progress.setWindowTitle("✏️ Upload Cloud ដែលបានកែ")
+            progress.setWindowModality(Qt.WindowModal)  # type: ignore[attr-defined]
+            progress.setMinimumDuration(0)
+            progress.setAutoClose(False)
+            progress.show()
+            QApplication.processEvents()
+
+            progress.setValue(10)
+            progress.setLabelText("កំពុងភ្ជាប់ទៅ Cloud repository...")
+            QApplication.processEvents()
+            temp_git_dir = self._create_cloud_git_workspace(repo_url, temp_root, "temp_github_cloud_edit_")
+            edited_db = os.path.join(temp_git_dir, upload_file_name)
+
+            progress.setValue(20)
+            progress.setLabelText("កំពុងបង្កើត database ថ្មី...")
+            QApplication.processEvents()
+            build_patient_share_database(edited_db, edited_rows)
+
+            metadata = {
+                "version": APP_VERSION,
+                "upload_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "upload_by": self.current_user or "login-screen",
+                "period": period_label,
+                "patient_count": len(edited_rows),
+                "edited_cloud_file": upload_file_name,
+                "cloud_backup": cloud_backup_path,
+                "note": "Cloud data edited from uploaded database"
+            }
+            with open(os.path.join(temp_git_dir, "report_metadata.json"), "w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+            readme_content = (
+                f"# Cloud Data Edited: {period_label}\n\n"
+                f"**Edited Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"**Edited By:** {self.current_user or 'login-screen'}\n"
+                f"**File:** {upload_file_name}\n"
+                f"**Patient Count:** {len(edited_rows)}\n"
+            )
+            with open(os.path.join(temp_git_dir, "README.md"), "w", encoding="utf-8") as f:
+                f.write(readme_content)
+
+            published, failed_step, git_error = self._publish_cloud_git_workspace(
+                temp_git_dir,
+                f"Edit cloud data {period_label} - {len(edited_rows)} patients",
+                progress,
+                35,
+                60,
+            )
+            if not published:
+                progress.close()
+                QMessageBox.critical(
+                    self,
+                    "❌ Upload បរាជ័យ",
+                    f"កំហុសពេល {failed_step.lower()}\n\n"
+                    f"{git_error}\n\n"
+                    f"💾 Backup Cloud ដើម:\n{cloud_backup_path}"
+                )
+                return
+
+            uploaded_db_url = self._github_repo_file_raw_url(repo_url, upload_file_name)
+            if uploaded_db_url:
+                self.config.set('CATEGORIES', 'cloud_sync_url', uploaded_db_url)
+                with open(self.settings_file, 'w', encoding='utf-8') as f:
+                    self.config.write(f)
+
+            file_size_mb = f"{os.path.getsize(edited_db) / (1024 * 1024):.2f} MB"
+            progress.setValue(100)
+            progress.close()
+
+            QMessageBox.information(
+                self,
+                "✅ កែ Cloud ជោគជ័យ",
+                f"ទិន្នន័យ Cloud ត្រូវបានកែ និង Upload ត្រឡប់រួចរាល់។\n\n"
+                f"រយៈពេល: {period_label}\n"
+                f"ចំនួន row: {len(edited_rows)}\n"
+                f"ទំហំ: {file_size_mb}\n\n"
+                f"Backup Cloud ដើម:\n{cloud_backup_path}"
+            )
+
+        except subprocess.TimeoutExpired:
+            if progress:
+                progress.close()
+            QMessageBox.critical(
+                self,
+                "❌ Timeout",
+                "Upload ចំណាយពេលយូរពេក។ សូមពិនិត្យ Internet Connection។"
+            )
+        except sqlite3.Error as e:
+            if progress:
+                progress.close()
+            QMessageBox.critical(
+                self,
+                "❌ Database Error",
+                f"មិនអាចអានតារាង patient ពី Cloud database បានទេ:\n{str(e)}"
+            )
+        except Exception as e:
+            if progress:
+                progress.close()
+            QMessageBox.critical(
+                self,
+                "❌ កំហុស",
+                f"មិនអាចកែទិន្នន័យ Cloud បានទេ:\n{str(e)}"
+            )
+        finally:
+            for folder in (download_temp_dir, temp_git_dir):
+                if folder:
+                    try:
+                        shutil.rmtree(folder, ignore_errors=True)
+                    except Exception:
+                        pass
+
     def show_telegram_bot_setup(self):
         """បង្ហាញ Dialog សម្រាប់កំណត់ Telegram Bot"""
         dialog = TelegramBotSetupDialog(self)
@@ -1584,6 +2490,78 @@ class LoginDialog(BaseDialog):
             return result.returncode == 0
         except Exception:
             return False
+
+    def _create_cloud_git_workspace(self, repo_url, temp_root, prefix):
+        """Clone the Cloud repo when possible so older uploaded files are preserved."""
+        os.makedirs(temp_root, exist_ok=True)
+        temp_git_dir = tempfile.mkdtemp(prefix=prefix, dir=temp_root)
+        clone_result = subprocess.run(
+            ['git', 'clone', '--depth', '1', repo_url, temp_git_dir],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=120,
+            **_subprocess_no_window_kwargs()
+        )
+
+        if clone_result.returncode == 0:
+            return temp_git_dir
+
+        shutil.rmtree(temp_git_dir, ignore_errors=True)
+        temp_git_dir = tempfile.mkdtemp(prefix=prefix, dir=temp_root)
+        init_commands = [
+            ['git', 'init'],
+            ['git', 'branch', '-M', 'main'],
+            ['git', 'remote', 'add', 'origin', repo_url],
+        ]
+        for cmd in init_commands:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                cwd=temp_git_dir,
+                timeout=120,
+                **_subprocess_no_window_kwargs()
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Git workspace setup failed.")
+        return temp_git_dir
+
+    def _publish_cloud_git_workspace(self, temp_git_dir, commit_message, progress, start_value=60, span=40):
+        commands = [
+            ("Setting git user name...", ['git', 'config', 'user.name', 'NOU SARAT']),
+            ("Setting git user email...", ['git', 'config', 'user.email', 'saratboy1988-a11y@users.noreply.github.com']),
+            ("Adding files...", ['git', 'add', '.']),
+            ("Committing...", ['git', 'commit', '-m', commit_message]),
+            ("Setting branch...", ['git', 'branch', '-M', 'main']),
+            ("Pushing to GitHub...", ['git', 'push', '-u', 'origin', 'main']),
+        ]
+
+        for i, (msg, cmd) in enumerate(commands):
+            if progress:
+                progress.setValue(start_value + int((i / len(commands)) * span))
+                progress.setLabelText(msg)
+                QApplication.processEvents()
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                cwd=temp_git_dir,
+                timeout=120,
+                **_subprocess_no_window_kwargs()
+            )
+            if result.returncode != 0:
+                output = f"{result.stderr}\n{result.stdout}".strip()
+                if "nothing to commit" in output.lower():
+                    continue
+                return False, msg, output
+        return True, "", ""
 
     def _upload_to_github(self, repo_url):
         """ផ្ញើរបាយការណ៍ទៅ GitHub (ជម្រើសច្រើន: ថ្ងៃ/សប្តាហ៍/ខែ/កំណត់ដោយខ្លួនឯង)"""
@@ -1681,6 +2659,18 @@ class LoginDialog(BaseDialog):
                 )
                 return
 
+            review_dialog = CloudUploadReviewDialog(patients_selected, self, period_label)
+            if review_dialog.exec_() != QDialog.Accepted:
+                return
+            patients_selected = review_dialog.get_patient_rows()
+            if not patients_selected:
+                QMessageBox.information(
+                    self,
+                    "📭 គ្មានទិន្នន័យ",
+                    "អ្នកបានលុប row ទាំងអស់ចេញពី package Upload។"
+                )
+                return
+
             # សួរថាតើចង់បន្ថែមការកត់សម្គាល់ទេ
             note, note_ok = self._get_upload_note_input(period_label)
 
@@ -1700,7 +2690,7 @@ class LoginDialog(BaseDialog):
 
             try:
                 os.makedirs(temp_root, exist_ok=True)
-                temp_git_dir = tempfile.mkdtemp(prefix="temp_github_upload_", dir=temp_root)
+                temp_git_dir = self._create_cloud_git_workspace(repo_url, temp_root, "temp_github_upload_")
             except Exception as e:
                 progress.close()
                 QMessageBox.critical(
@@ -1792,45 +2782,23 @@ class LoginDialog(BaseDialog):
             progress.setValue(60)
             QApplication.processEvents()
 
-            # Git commands
-            commands = [
-                ("Initializing git...", ['git', 'init']),
-                ("Setting git user name...", ['git', 'config', 'user.name', 'NOU SARAT']),
-                ("Setting git user email...", ['git', 'config', 'user.email', 'saratboy1988-a11y@users.noreply.github.com']),
-                ("Adding files...", ['git', 'add', '.']),
-                ("Committing...", ['git', 'commit', '-m', f"Report {period_label} - {len(patients_selected)} patients"]),
-                ("Setting branch...", ['git', 'branch', '-M', 'main']),
-                ("Adding remote...", ['git', 'remote', 'add', 'origin', repo_url]),
-                ("Pushing to GitHub...", ['git', 'push', '-u', 'origin', 'main', '--force']),
-            ]
-
-            for i, (msg, cmd) in enumerate(commands):
-                progress.setValue(60 + int((i / len(commands)) * 40))
-                progress.setLabelText(msg)
-                QApplication.processEvents()
-
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    cwd=temp_git_dir,
-                    timeout=120,
-                    **_subprocess_no_window_kwargs()
+            published, failed_step, git_error = self._publish_cloud_git_workspace(
+                temp_git_dir,
+                f"Report {period_label} - {len(patients_selected)} patients",
+                progress,
+                60,
+                40,
+            )
+            if not published:
+                progress.close()
+                QMessageBox.critical(
+                    self,
+                    "❌ Upload បរាជ័យ",
+                    f"កំហុសពេល {failed_step.lower()}\n\n"
+                    f"{git_error}\n\n"
+                    f"💾 Backup ក្នុង:\n{backup_path}"
                 )
-
-                if result.returncode != 0:
-                    progress.close()
-                    error_msg = result.stderr.strip()
-                    QMessageBox.critical(
-                        self,
-                        "❌ Upload បរាជ័យ",
-                        f"កំហុសពេល {msg.lower()}\n\n"
-                        f"{error_msg}\n\n"
-                        f"💾 Backup ក្នុង:\n{backup_path}"
-                    )
-                    return
+                return
 
             uploaded_db_url = self._github_repo_file_raw_url(repo_url, filename_db)
             if uploaded_db_url:
@@ -4172,8 +5140,12 @@ class App(QWidget):
         date_box_layout.setSpacing(2)
         
         self.date = QLineEdit()
-        self.date.setPlaceholderText("DDMMYY (ឧ. 27125)")
-        self.date.editingFinished.connect(self.format_date_input)
+        self.date.setReadOnly(True)
+        self.date.setPlaceholderText("ជ្រើសរើសកាលបរិច្ឆេទ")
+        self.date.setToolTip("ចុចដើម្បីជ្រើសរើសកាលបរិច្ឆេទពីប្រតិទិន")
+        self.date.setCursor(Qt.PointingHandCursor)  # type: ignore[attr-defined]
+        self.date.mousePressEvent = lambda event: self.pick_date()  # type: ignore[method-assign]
+        self.date.setStyleSheet("background-color: #353b48; color: #ffffff; font-weight: bold;")
         
         self.btn_cal = QPushButton("📅")
         self.btn_cal.setFixedWidth(35)
@@ -4482,6 +5454,7 @@ class App(QWidget):
             ("📤 Share Database ទៅ Telegram", self.share_to_telegram, None),
             ("💾 Backup Database", self.backup_database, None),
             ("🔄 Restore Database", self.restore_database, None),
+            ("🔐 License / Register", self.open_license_status, None),
             ("🎨 ការកំណត់ និងប្តូរ Themes", self.open_settings, None),
             ("🆙 ពិនិត្យមើលការ Update", self.check_for_updates, None),
             ("📜 ប្រវត្តិប្រើប្រាស់ (History)", self.show_login_history, None),
@@ -4498,6 +5471,35 @@ class App(QWidget):
         
         self.tools_btn.setMenu(self.tools_menu)
         action_layout.addWidget(self.tools_btn)
+
+        self.cloud_btn = QPushButton("☁ Cloud Sync ▾")
+        self.cloud_btn.setCursor(Qt.PointingHandCursor)  # type: ignore[attr-defined]
+        self.cloud_btn.setStyleSheet("""
+            QPushButton {
+                background: #0984e3;
+                color: white;
+                padding: 6px 15px;
+                border-radius: 5px;
+                font-weight: bold;
+                min-height: 25px;
+            }
+            QPushButton:hover { background: #1e90ff; }
+            QPushButton::menu-indicator { image: none; width: 0px; }
+        """)
+        self.cloud_menu = QMenu(self)
+        cloud_actions = [
+            ("☁️ ទាញពី Cloud", lambda checked=False: self._run_cloud_helper_action("sync_data_initial", refresh_after=True)),
+            ("⬆️ ផ្ញើទៅ Cloud", lambda checked=False: self._run_cloud_helper_action("upload_to_cloud")),
+            ("✏️ កែទិន្នន័យ Cloud", lambda checked=False: self._run_cloud_helper_action("edit_uploaded_cloud_data")),
+            ("⚙️ កំណត់ Cloud Repository", lambda checked=False: self._run_cloud_helper_action("show_github_setup")),
+            ("❓ ជំនួយ Cloud", lambda checked=False: self._run_cloud_helper_action("show_cloud_sync_help")),
+        ]
+        for text, handler in cloud_actions:
+            action = QAction(text, self)
+            action.triggered.connect(handler)
+            self.cloud_menu.addAction(action)
+        self.cloud_btn.setMenu(self.cloud_menu)
+        action_layout.addWidget(self.cloud_btn)
         action_layout.addStretch() # រុញប៊ូតុងឱ្យនៅខាងឆ្វេង
 
         # Set Tab Order dynamically based on patient type
@@ -4586,7 +5588,7 @@ class App(QWidget):
             'imci': '',
             'nutrition': 'ទម្ងន់/អាយុ, ទម្ងន់/កំពស់',
             'service': 'HEF, HEF-R, HEF-I, PAY, FREE, NSSF-A, NSSF-7, NSSF-8, Other',
-            'diagnosis': 'ជំងឺរលាកផ្លូវដង្ហើមលើ, ជំងឺរលាកផ្លូវដង្ហើមក្រោម, របេងកូនកណ្ដុរ, ជំងឺរលាកក្រពះ, រលាក់ក្រពះរ៉ាំរ៉ៃ, រាកស្រួចស្រាវ, រាកមួល, រលូត, រំលូត, របេងសួត, ធ្លាក់ស, សើរស្បែក, SAM, តាមដានការលូតលាស់, ភ្នែកក្រហម, ក្អកលើស១៤ថ្ងៃ, លើសសម្ពាធឈាម, ស្លេកស្លាំង, ខ្វះជាតិស្ករ, គ្រោះថ្នាក់ចរាចរណ៍, គ្រុនចាញ់កម្រិតស្រាល, ទឹកនោមផ្អែមប្រភេទទី2, រដូវមិនទៀង, រលាកទ្វាមាស, MAM, ផ្សេងៗ',
+            'diagnosis': 'ជំងឺរលាកផ្លូវដង្ហើមលើ, ជំងឺរលាកផ្លូវដង្ហើមក្រោម, របេងកូនកណ្ដុរ, ជំងឺរលាកក្រពះស្រួចស្រាវ, រលាកក្រពះរ៉ាំរ៉ៃ, រាកគ្មានខ្សោះជាតិទឺក, រាកមួល, របេងសួត, ធ្លាក់ស, សើរស្បែកផ្សេងៗ, SAM, ជំងឺភ្នែកក្រហម, ក្អកលើស១៤ថ្ងៃ, ស្លេកស្លាំង, ខ្វះជាតិស្ករ, របួសផ្សេងៗក្រៅពីគ្រោះថ្នាក់ចរាចរណ៍, រដូវមិនទៀង, រលាកទ្វាមាស, របួសគ្រោះថ្នាក់ចរាចរណ៍, រលាកសន្លាក់គ្មានខ្ទុះ, ជំងឺពងបែកដៃជើង មាត់, រលាកមាត់ស្បួន, ពុលអាហារ, រលាកអញ្ជាញធ្មេញស្រួចស្រាវ, MAM, រលាកតម្រងនោម, ឈឺចាប់ពេលមករដូវ, ជំងឺទូរទៅផ្សេងៗ',
             'medicine': 'Paracetamol, Amoxicillin, Vitamin C, Ibuprofen, Omeprazole, Ciprofloxacin, Metronidazole, Ceftriaxone, Salbutamol, Domperidone',
             'theme': 'Modern Dark',
             'khmer_font': 'Khmer OS Battambang',
@@ -5972,6 +6974,28 @@ class App(QWidget):
             
             self.statusBar.showMessage(f"បានរក្សាទុក! រចនាបទបច្ចុប្បន្ន៖ {self.current_theme}", 5000)
             QMessageBox.information(self, "Settings Saved", f"ការកំណត់ត្រូវបានរក្សាទុក ហើយរចនាបទត្រូវបានប្តូរទៅជា '{self.current_theme}'")
+
+    def open_license_status(self):
+        dialog = LicenseStatusDialog(self)
+        dialog.exec_()
+
+    def _run_cloud_helper_action(self, method_name, refresh_after=False):
+        helper = LoginDialog()
+        helper.hide()
+        helper.current_user = self.current_user
+        helper.user_context = self.user_context
+        helper.branch_code = self.branch_code
+        helper.active_branch_code = self.active_branch_code
+        helper.backup_dir = self.backup_dir
+
+        try:
+            method = getattr(helper, method_name)
+            method()
+            if refresh_after:
+                self.view()
+                self.update_next_serial_no()
+        finally:
+            helper.deleteLater()
 
     def generate_advanced_report(self):
         report_handler.generate_advanced_report(self)
@@ -8184,9 +9208,10 @@ if __name__ == "__main__":
     # --- ត្រួតពិនិត្យ License ជាមុនសិន ---
     mid = get_machine_id()
     lic_info = db.get_license_info()
+    online_valid, _online_msg = validate_saved_online_license(mid)
 
     needs_activation = False
-    # Silent Trial Check: ប្រសិនបើមិនទាន់មានព័ត៌មាន License សោះ
+    # Initialize local license metadata; app use still requires a valid license.
     if not lic_info or not lic_info[1]:
         # បើទើបដំឡើងដំបូង កត់ត្រាថ្ងៃ install
         db.save_license_info(datetime.now().strftime("%Y-%m-%d"), "", "", mid)
@@ -8196,16 +9221,13 @@ if __name__ == "__main__":
         QMessageBox.critical(None, "Error", "Failed to initialize license information.")  # type: ignore
         sys.exit(1)
 
-    install_date = datetime.strptime(lic_info[1], "%Y-%m-%d")
     current_key = lic_info[2]
     current_email = lic_info[3]
     
-    # ពិនិត្យ Trial (១ ខែ = ៣០ ថ្ងៃ)
-    days_used = (datetime.now() - install_date).days
-    
-    if not current_key:
-        if days_used > 30: # បើប្រើលើស ៣០ ថ្ងៃ (១ ខែ) ទើបលោតទាមទារ Key
-            needs_activation = True
+    if online_valid:
+        needs_activation = False
+    elif not current_key:
+        needs_activation = True
     else:
         is_valid, _ = validate_license(current_email, mid, current_key)
         if not is_valid:

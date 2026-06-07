@@ -1,8 +1,8 @@
 {
-  "version": "2.0.18",
+  "version": "2.1.0",
   "installer": {
-    "url": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/ClinicManager_Setup_2.0.18.exe",
-    "file_name": "ClinicManager_Setup_2.0.18.exe",
+    "url": "https://github.com/saratboy1988-a11y/Clinic-Update/releases/download/v2.1.0/ClinicManager_Setup_2.1.0.exe",
+    "file_name": "ClinicManager_Setup_2.1.0.exe",
     "silent_args": [
       "/SP-",
       "/VERYSILENT",

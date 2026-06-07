@@ -56,6 +56,7 @@ pyinstaller --noconsole --onedir --name "ClinicManager" ^
 --add-data "ui_utils.py;." ^
 --add-data "widgets.py;." ^
 --add-data "constants.py;." ^
+--add-data "license_server_config.json;." ^
 main.py
 
 if errorlevel 1 (
@@ -86,6 +87,7 @@ copy /y report_handler.py dist\ClinicManager\ >nul
 copy /y ui_utils.py dist\ClinicManager\ >nul
 copy /y widgets.py dist\ClinicManager\ >nul
 copy /y constants.py dist\ClinicManager\ >nul
+copy /y license_server_config.json dist\ClinicManager\ >nul
 
 echo.
 echo ============================================================

@@ -6647,39 +6647,34 @@ class App(QWidget):
                 return f"{int(value or 0):,}"
 
             service_use_summary_html = f"""
-            <h3 style='color: {comparison_header}; font-size: 18px; margin-top: 20px;'>I. ស្ថិតិអ្នកប្រើសេវា</h3>
-            <table border='1' cellpadding='6' width='100%' bgcolor='{table_bg}' style='border-collapse: collapse; font-size: 12px;'>
+            <h3 style='color: {comparison_header}; font-size: 22px; margin: 18px 0 8px 0;'>I. ស្ថិតិអ្នកប្រើសេវា</h3>
+            <table border='1' cellpadding='6' width='100%' bgcolor='{table_bg}' style='border-collapse: collapse; font-size: 12px; border-color: #000000;'>
                 <tr bgcolor='{comparison_header}'>
-                    <td style='color: {header_text}; width: 32%;'><b>១ - បរិយាយលទ្ធផលការផ្តល់សេវា</b></td>
-                    <td style='color: {header_text}; text-align: center;'><b>០-៤ឆ្នាំ</b></td>
-                    <td style='color: {header_text}; text-align: center;'><b>៥-១៤ឆ្នាំ</b></td>
-                    <td style='color: {header_text}; text-align: center;'><b>១៥ឆ្នាំឡើង</b></td>
-                    <td style='color: {header_text}; text-align: center;'><b>សរុប</b></td>
-                    <td style='color: {header_text}; text-align: center;'><b>ប្រុស</b></td>
-                    <td style='color: {header_text}; text-align: center;'><b>ស្រី</b></td>
+                    <td style='color: {header_text}; width: 28%; border-color: #000000;'><b>១ - បរិយាយលទ្ធផលការផ្តល់សេវា</b></td>
+                    <td style='color: {header_text}; text-align: center; border-color: #000000;'><b>តំបន់ ក</b></td>
+                    <td style='color: {header_text}; text-align: center; border-color: #000000;'><b>តំបន់ ខ</b></td>
+                    <td style='color: {header_text}; text-align: center; border-color: #000000;'><b>តំបន់ គ</b></td>
+                    <td style='color: {header_text}; text-align: center; border-color: #000000;'><b>សរុប</b></td>
+                    <td style='color: {header_text}; text-align: center; border-color: #000000;'><b>ប្រុស</b></td>
+                    <td style='color: {header_text}; text-align: center; border-color: #000000;'><b>ស្រី</b></td>
                 </tr>
                 <tr bgcolor='{row_normal}'>
-                    <td style='color: {row_text};'>សរុបចំនួនអ្នកប្រើសេវា</td>
-                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["under5"])}</td>
-                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["age_5_14"])}</td>
-                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["age_15_plus"])}</td>
-                    <td style='text-align: center; color: {row_text};'><b>{fmt_num(service_use_summary["total"])}</b></td>
-                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["male"])}</td>
-                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["female"])}</td>
+                    <td style='color: {row_text}; border-color: #000000;'>សរុបចំនួនអ្នកប្រើសេវា</td>
+                    <td style='text-align: center; color: {row_text}; border-color: #000000;'>{fmt_num(area_a_total_all)}</td>
+                    <td style='text-align: center; color: {row_text}; border-color: #000000;'>{fmt_num(area_b_total_all)}</td>
+                    <td style='text-align: center; color: {row_text}; border-color: #000000;'>{fmt_num(area_c_total_all)}</td>
+                    <td style='text-align: center; color: {row_text}; border-color: #000000;'><b>{fmt_num(service_use_summary["total"])}</b></td>
+                    <td style='text-align: center; color: {row_text}; border-color: #000000;'>{fmt_num(service_use_summary["male"])}</td>
+                    <td style='text-align: center; color: {row_text}; border-color: #000000;'>{fmt_num(service_use_summary["female"])}</td>
                 </tr>
                 <tr bgcolor='{row_alt}'>
-                    <td style='color: {row_text};'>ក្នុងនោះ ករណីថ្មី:សរុប</td>
-                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["new_under5"])}</td>
-                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["new_age_5_14"])}</td>
-                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["new_age_15_plus"])}</td>
-                    <td style='text-align: center; color: {row_text};'><b>{fmt_num(service_use_summary["new_total"])}</b></td>
-                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["new_male"])}</td>
-                    <td style='text-align: center; color: {row_text};'>{fmt_num(service_use_summary["new_female"])}</td>
-                </tr>
-                <tr bgcolor='{table_bg}'>
-                    <td colspan='7' style='color: {row_text}; font-size: 11px; font-style: italic;'>
-                        សម្គាល់៖ ០-៤ឆ្នាំ = ០-២៩ថ្ងៃ + ២៩ថ្ងៃ-១១ខែ + ១-៤ឆ្នាំ, ៥-១៤ឆ្នាំ = ក្រុមអាយុ ៥-១៤ឆ្នាំ, ១៥ឆ្នាំឡើង = ក្រុមអាយុដែលនៅសល់។
-                    </td>
+                    <td style='color: {row_text}; border-color: #000000;'>ក្នុងនោះ ករណីថ្មី:សរុប</td>
+                    <td style='text-align: center; color: {row_text}; border-color: #000000;'>{fmt_num(area_a_total)}</td>
+                    <td style='text-align: center; color: {row_text}; border-color: #000000;'>{fmt_num(area_b_total)}</td>
+                    <td style='text-align: center; color: {row_text}; border-color: #000000;'>{fmt_num(area_c_total)}</td>
+                    <td style='text-align: center; color: {row_text}; border-color: #000000;'><b>{fmt_num(service_use_summary["new_total"])}</b></td>
+                    <td style='text-align: center; color: {row_text}; border-color: #000000;'>{fmt_num(service_use_summary["new_male"])}</td>
+                    <td style='text-align: center; color: {row_text}; border-color: #000000;'>{fmt_num(service_use_summary["new_female"])}</td>
                 </tr>
             </table>
             """

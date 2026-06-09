@@ -142,13 +142,18 @@ class PatientCol:
     REMARK = 22
     TYPE = 23
     BRANCH = 24
+    CREATED_BY = 25
+    CREATED_AT = 26
+    UPDATED_BY = 27
+    UPDATED_AT = 28
 
 
 PATIENT_COLUMNS = {
     "date", "serial_no", "card_id", "name", "guardian", "age", "sex", "area",
     "pregnant", "address", "phone", "ref_from", "disease_case", "symptoms",
     "paraclinical", "diagnosis", "treatment", "imci", "nutrition", "ref_to",
-    "service", "remark", "patient_type", "branch_code"
+    "service", "remark", "patient_type", "branch_code", "created_by", "created_at",
+    "updated_by", "updated_at"
 }
 
 # Helper function to handle database connection and write operations (Insert, Update, Delete)
@@ -181,7 +186,8 @@ def _patient_insert_columns():
     return (
         "date", "serial_no", "card_id", "name", "guardian", "age", "sex", "area", "pregnant",
         "address", "phone", "ref_from", "disease_case", "symptoms", "paraclinical", "diagnosis",
-        "treatment", "imci", "nutrition", "ref_to", "service", "remark", "patient_type", "branch_code"
+        "treatment", "imci", "nutrition", "ref_to", "service", "remark", "patient_type", "branch_code",
+        "created_by", "created_at", "updated_by", "updated_at"
     )
 
 
@@ -209,6 +215,8 @@ def _insert_patient_with_cursor(cur, patient_data):
     columns = _patient_insert_columns()
     type_idx = columns.index("patient_type")
     branch_idx = columns.index("branch_code")
+    created_by_idx = columns.index("created_by")
+    created_at_idx = columns.index("created_at")
     if len(patient_data) > type_idx:
         patient_data[type_idx] = _infer_patient_type(
             patient_data[PatientCol.SERIAL - 1],
@@ -216,8 +224,12 @@ def _insert_patient_with_cursor(cur, patient_data):
             patient_data[PatientCol.AGE - 1],
         )
     if len(patient_data) < len(columns):
-        patient_data.append("MAIN")
+        patient_data.extend([""] * (len(columns) - len(patient_data)))
     patient_data[branch_idx] = normalize_branch_code(patient_data[branch_idx])
+    if not patient_data[created_by_idx]:
+        patient_data[created_by_idx] = "import"
+    if not patient_data[created_at_idx]:
+        patient_data[created_at_idx] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     patient_data = tuple(patient_data)
     placeholders = ",".join(["?"] * len(columns))
     query = f"INSERT INTO patient ({','.join(columns)}) VALUES ({placeholders})"
@@ -770,7 +782,8 @@ def connect():
                 "pregnant": "TEXT", "address": "TEXT", "phone": "TEXT", "ref_from": "TEXT",
                 "disease_case": "TEXT", "symptoms": "TEXT", "paraclinical": "TEXT", "diagnosis": "TEXT",
                 "treatment": "TEXT", "imci": "TEXT", "nutrition": "TEXT", "ref_to": "TEXT",
-                "service": "TEXT", "remark": "TEXT", "patient_type": "TEXT", "branch_code": "TEXT"
+                "service": "TEXT", "remark": "TEXT", "patient_type": "TEXT", "branch_code": "TEXT",
+                "created_by": "TEXT", "created_at": "TEXT", "updated_by": "TEXT", "updated_at": "TEXT"
             }
 
             # Get existing columns from the patient table
@@ -784,7 +797,13 @@ def connect():
                     cur.execute(f"ALTER TABLE patient ADD COLUMN {col_name} {col_type}")
 
             cur.execute("UPDATE patient SET branch_code='MAIN' WHERE branch_code IS NULL OR branch_code=''")
+            cur.execute("UPDATE patient SET created_by='unknown' WHERE created_by IS NULL OR created_by=''")
+            cur.execute("UPDATE patient SET created_at='' WHERE created_at IS NULL")
+            cur.execute("UPDATE patient SET updated_by='' WHERE updated_by IS NULL")
+            cur.execute("UPDATE patient SET updated_at='' WHERE updated_at IS NULL")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_patient_branch ON patient(branch_code)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_patient_created_by ON patient(created_by)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_patient_date_created_by ON patient(date, created_by)")
 
             cur.execute("PRAGMA table_info(users)")
             existing_user_columns = {row[1] for row in cur.fetchall()}
@@ -794,6 +813,7 @@ def connect():
                 cur.execute("ALTER TABLE users ADD COLUMN branch_code TEXT")
             cur.execute("UPDATE users SET role='user' WHERE role IS NULL OR role=''")
             cur.execute("UPDATE users SET branch_code='MAIN' WHERE branch_code IS NULL OR branch_code=''")
+            cur.execute("UPDATE users SET branch_code=UPPER(TRIM(branch_code)) WHERE branch_code IS NOT NULL AND branch_code<>''")
             cur.execute("UPDATE users SET role='admin', branch_code='ALL' WHERE username='admin'")
 
             # Enforce unique usernames when the existing data allows it.
@@ -901,7 +921,8 @@ def save_license_info(install_date, license_key, email, machine_id):
 
 def insert(date, serial_no, card_id, name, guardian, age, sex, area, pregnant, address, phone,
            ref_from, disease_case, symptoms, paraclinical, diagnosis, treatment,
-           imci, nutrition, ref_to, service, remark, patient_type, id=None, branch_code="MAIN"):
+           imci, nutrition, ref_to, service, remark, patient_type, id=None, branch_code="MAIN",
+           created_by=""):
     """
     Insert a new patient record (or update if id is provided)
 
@@ -914,16 +935,19 @@ def insert(date, serial_no, card_id, name, guardian, age, sex, area, pregnant, a
     """
     patient_type = _infer_patient_type(serial_no, patient_type, age)
     branch_code = normalize_branch_code(branch_code)
+    audit_user = str(created_by or "").strip() or "unknown"
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if id is not None:
         # Insert with specific ID (INSERT OR REPLACE)
         columns = ["id", "date", "serial_no", "card_id", "name", "guardian", "age", "sex", "area", "pregnant",
                    "address", "phone", "ref_from", "disease_case", "symptoms", "paraclinical", "diagnosis",
-                   "treatment", "imci", "nutrition", "ref_to", "service", "remark", "patient_type", "branch_code"]
+                   "treatment", "imci", "nutrition", "ref_to", "service", "remark", "patient_type", "branch_code",
+                   "created_by", "created_at", "updated_by", "updated_at"]
         placeholders = ",".join(["?"] * len(columns))
         query = f"INSERT OR REPLACE INTO patient ({','.join(columns)}) VALUES ({placeholders})"
         params = (id, date, serial_no, card_id, name, guardian, age, sex, area, pregnant, address, phone,
                   ref_from, disease_case, symptoms, paraclinical, diagnosis, treatment,
-                  imci, nutrition, ref_to, service, remark, patient_type, branch_code)
+                  imci, nutrition, ref_to, service, remark, patient_type, branch_code, audit_user, now_text, "", "")
 
         execute_write(query, params)
         return id
@@ -934,7 +958,7 @@ def insert(date, serial_no, card_id, name, guardian, age, sex, area, pregnant, a
         query = f"INSERT INTO patient ({','.join(columns)}) VALUES ({placeholders})"
         params = (date, serial_no, card_id, name, guardian, age, sex, area, pregnant, address, phone,
                   ref_from, disease_case, symptoms, paraclinical, diagnosis, treatment,
-                  imci, nutrition, ref_to, service, remark, patient_type, branch_code)
+                  imci, nutrition, ref_to, service, remark, patient_type, branch_code, audit_user, now_text, "", "")
 
         # Get lastrowid from the same connection to avoid race condition
         return execute_write(query, params, return_lastrowid=True) or 0
@@ -977,7 +1001,7 @@ def delete_all(branch_code=None):
 
 def update(id, date, serial_no, card_id, name, guardian, age, sex, area, pregnant, address, phone,
            ref_from, disease_case, symptoms, paraclinical, diagnosis, treatment,
-           imci, nutrition, ref_to, service, remark, patient_type, branch_code=None):
+           imci, nutrition, ref_to, service, remark, patient_type, branch_code=None, updated_by=""):
     """
     Update a patient record with all fields
     
@@ -991,14 +1015,18 @@ def update(id, date, serial_no, card_id, name, guardian, age, sex, area, pregnan
     if branch_code:
         branch_set = ", branch_code=?"
         branch_params.append(normalize_branch_code(branch_code))
+    audit_user = str(updated_by or "").strip()
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if audit_user else ""
+    audit_set = ", updated_by=?, updated_at=?" if audit_user else ""
+    audit_params = [audit_user, now_text] if audit_user else []
     execute_write("""
         UPDATE patient SET
         date=?, serial_no=?, card_id=?, name=?, guardian=?, age=?, sex=?, area=?, pregnant=?,
         address=?, phone=?, ref_from=?, disease_case=?, symptoms=?, paraclinical=?,
-        diagnosis=?, treatment=?, imci=?, nutrition=?, ref_to=?, service=?, remark=?, patient_type=?{branch_set}
+        diagnosis=?, treatment=?, imci=?, nutrition=?, ref_to=?, service=?, remark=?, patient_type=?{branch_set}{audit_set}
         WHERE id=?
-    """.format(branch_set=branch_set), (date, serial_no, card_id, name, guardian, age, sex, area, pregnant, address, phone,
-          ref_from, disease_case, symptoms, paraclinical, diagnosis, treatment, imci, nutrition, ref_to, service, remark, patient_type, *branch_params, id))
+    """.format(branch_set=branch_set, audit_set=audit_set), (date, serial_no, card_id, name, guardian, age, sex, area, pregnant, address, phone,
+          ref_from, disease_case, symptoms, paraclinical, diagnosis, treatment, imci, nutrition, ref_to, service, remark, patient_type, *branch_params, *audit_params, id))
 
 def update_serial(id, serial_no):
     """
@@ -1104,6 +1132,128 @@ def add_user(username, password, branch_code="MAIN", role="user"):
 
 def check_username(username):
     return execute_read("SELECT * FROM users WHERE username=?", (username,), one=True)
+
+
+def get_usernames(branch_code=None):
+    branch = normalize_branch_code(branch_code) if branch_code else "ALL"
+    if branch == "ALL":
+        rows = execute_read("SELECT username FROM users ORDER BY username COLLATE NOCASE")
+    else:
+        rows = execute_read(
+            """
+            SELECT username
+            FROM users
+            WHERE branch_code=? OR branch_code='ALL' OR branch_code IS NULL OR branch_code=''
+            ORDER BY username COLLATE NOCASE
+            """,
+            (branch,)
+        )
+    return [str(row["username"]) for row in rows or [] if str(row["username"] or "").strip()]
+
+
+def _strip_composite(value):
+    text = str(value or "").strip()
+    return text.split("::", 1)[0].strip() if "::" in text else text
+
+
+def _patient_quality_issues(row):
+    required_fields = [
+        ("date", "ខ្វះថ្ងៃខែ"),
+        ("name", "ខ្វះឈ្មោះ"),
+        ("age", "ខ្វះអាយុ"),
+        ("sex", "ខ្វះភេទ"),
+        ("area", "ខ្វះតំបន់"),
+        ("address", "ខ្វះអាសយដ្ឋាន"),
+        ("disease_case", "ខ្វះប្រភេទជំងឺ"),
+        ("symptoms", "ខ្វះរោគសញ្ញា"),
+        ("diagnosis", "ខ្វះរោគវិនិច្ឆ័យ"),
+        ("service", "ខ្វះសេវា"),
+    ]
+    issues = []
+    for column, label in required_fields:
+        if not str(row[column] or "").strip():
+            issues.append(label)
+
+    date_text = str(row["date"] or "").strip()
+    if date_text:
+        try:
+            datetime.strptime(date_text, "%d/%m/%Y")
+        except ValueError:
+            issues.append("ទម្រង់ថ្ងៃខែមិនត្រឹមត្រូវ")
+
+    if not _strip_composite(row["area"]):
+        issues.append("តំបន់មិនត្រឹមត្រូវ")
+    if not _strip_composite(row["disease_case"]):
+        issues.append("ប្រភេទជំងឺមិនត្រឹមត្រូវ")
+
+    return issues
+
+
+def get_user_patient_audit(username, start_date, end_date, branch_code=None):
+    filters = []
+    params = []
+
+    if username and username != "All":
+        filters.append("created_by=?")
+        params.append(username)
+
+    if start_date and end_date:
+        filters.append("(SUBSTR(date, 7, 4) || SUBSTR(date, 4, 2) || SUBSTR(date, 1, 2)) BETWEEN ? AND ?")
+        params.extend([
+            start_date.strftime("%Y%m%d"),
+            end_date.strftime("%Y%m%d"),
+        ])
+
+    if branch_code:
+        branch_clause, branch_params = _branch_filter_clause(branch_code)
+        filters.append(branch_clause)
+        params.extend(branch_params)
+
+    where_sql = " AND ".join(filters) if filters else "1=1"
+    rows = execute_read(
+        f"""
+        SELECT *
+        FROM patient
+        WHERE {where_sql}
+        ORDER BY (SUBSTR(date, 7, 4) || SUBSTR(date, 4, 2) || SUBSTR(date, 1, 2)) ASC, id ASC
+        """,
+        tuple(params)
+    ) or []
+
+    records = []
+    valid_count = 0
+    issue_count = 0
+    for row in rows:
+        issues = _patient_quality_issues(row)
+        if issues:
+            issue_count += 1
+        else:
+            valid_count += 1
+        records.append({
+            "id": row["id"],
+            "date": row["date"],
+            "serial_no": row["serial_no"],
+            "name": row["name"],
+            "sex": row["sex"],
+            "age": row["age"],
+            "area": _strip_composite(row["area"]),
+            "disease": _strip_composite(row["disease_case"]),
+            "diagnosis": row["diagnosis"],
+            "service": row["service"],
+            "created_by": row["created_by"],
+            "created_at": row["created_at"],
+            "updated_by": row["updated_by"],
+            "updated_at": row["updated_at"],
+            "issues": issues,
+            "status": "ត្រូវពិនិត្យ" if issues else "ត្រឹមត្រូវ",
+        })
+
+    return {
+        "total": len(records),
+        "valid": valid_count,
+        "issues": issue_count,
+        "records": records,
+    }
 
 def log_login(username):
     login_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')

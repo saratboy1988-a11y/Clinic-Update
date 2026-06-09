@@ -105,7 +105,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QVBoxLa
                              QProgressDialog, QHeaderView, QTextBrowser)
 from PyQt5.QtWidgets import QScrollArea
 from PyQt5.QtGui import QFont, QColor, QFontDatabase, QKeySequence, QDesktopServices
-from PyQt5.QtCore import Qt, QDate, QUrl
+from PyQt5.QtCore import Qt, QDate, QUrl, QLocale
 import db
 from datetime import datetime, timedelta
 import configparser
@@ -1193,6 +1193,7 @@ class SignUpDialog(BaseDialog):
         self.branch_code.setFixedHeight(45)
         self.branch_code.setFont(QFont("Segoe UI", 14))
         self.branch_code.setInputMethodHints(Qt.ImhLatinOnly | Qt.ImhPreferLatin)  # type: ignore[attr-defined]
+        self.branch_code.textChanged.connect(self._force_branch_code_uppercase)
         
         self.btn_register = create_button("Register", COLOR_ACCENT_BLUE, "black", self.register)
         self.btn_register.setFixedHeight(45)
@@ -1214,6 +1215,16 @@ class SignUpDialog(BaseDialog):
         self.add_widget(QLabel("Branch Code:"))
         self.add_widget(self.branch_code)
         self.add_widget(self.btn_register)
+
+    def _force_branch_code_uppercase(self, text):
+        upper_text = str(text or "").upper()
+        if text == upper_text:
+            return
+        cursor_pos = self.branch_code.cursorPosition()
+        self.branch_code.blockSignals(True)
+        self.branch_code.setText(upper_text)
+        self.branch_code.setCursorPosition(cursor_pos)
+        self.branch_code.blockSignals(False)
     
     def register(self):
         user = self.user.text()
@@ -2087,6 +2098,14 @@ class LoginDialog(BaseDialog):
         style_cloud_button(self.btn_edit_cloud, "#0984e3", "#006bbf", "#1e90ff", "#0875cf")
         self.btn_edit_cloud.clicked.connect(self.edit_uploaded_cloud_data)
 
+        self.btn_delete_cloud = QPushButton("🗑️ លុប Cloud")
+        style_cloud_button(self.btn_delete_cloud, "#e74c3c", "#c0392b", "#ff5a4d", "#d64535")
+        self.btn_delete_cloud.clicked.connect(self.delete_uploaded_cloud_data)
+
+        self.btn_cloud_token = QPushButton("🔑 Token")
+        style_cloud_button(self.btn_cloud_token, "#8e44ad", "#6c3483", "#9b59b6", "#7d3c98")
+        self.btn_cloud_token.clicked.connect(self.show_github_token_setup)
+
         self.btn_sync_help = QPushButton("❓ ជំនួយ")
         style_cloud_button(self.btn_sync_help, "#f39c12", "#d87900", "#ffad22", "#ec8d00")
         self.btn_sync_help.clicked.connect(self.show_cloud_sync_help)
@@ -2100,7 +2119,9 @@ class LoginDialog(BaseDialog):
         sync_layout.addWidget(self.btn_sync, 0, 0)
         sync_layout.addWidget(self.btn_upload, 0, 1)
         sync_layout.addWidget(self.btn_edit_cloud, 1, 0)
-        sync_layout.addWidget(self.btn_sync_help, 1, 1)
+        sync_layout.addWidget(self.btn_delete_cloud, 1, 1)
+        sync_layout.addWidget(self.btn_cloud_token, 2, 0)
+        sync_layout.addWidget(self.btn_sync_help, 2, 1)
         sync_layout.setColumnStretch(0, 1)
         sync_layout.setColumnStretch(1, 1)
 
@@ -2256,6 +2277,9 @@ class LoginDialog(BaseDialog):
                 "សូមកំណត់ repository ផ្សេងសម្រាប់ទិន្នន័យ Cloud Sync។"
             )
             self.show_github_setup()
+            return
+
+        if not self._ensure_cloud_token_for_write():
             return
 
         download_file_name, period_label, ok = self._get_cloud_download_period_choice()
@@ -2493,6 +2517,197 @@ class LoginDialog(BaseDialog):
                     except Exception:
                         pass
 
+    def delete_uploaded_cloud_data(self):
+        """Delete an uploaded Cloud database file from the configured GitHub repo."""
+        if not self._check_git_installed():
+            QMessageBox.critical(
+                self,
+                "❌ មិនមាន Git",
+                "Git មិនទាន់បានដំឡើងលើកុំព្យូទ័រនេះទេ!\n\n"
+                "សូមដំឡើង Git មុនពេលលុបទិន្នន័យ Cloud:\n"
+                "https://git-scm.com/downloads"
+            )
+            return
+
+        repo_url = self.config.get('CATEGORIES', 'cloud_sync_repo_url', fallback="").strip()
+        if not repo_url:
+            reply = QMessageBox.question(
+                self,
+                "⚙️ មិនមាន GitHub Repository",
+                "ត្រូវកំណត់ GitHub Repository URL មុនពេលលុបទិន្នន័យ Cloud។\n\n"
+                "តើចង់កំណត់ឥឡូវនេះទេ?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self.show_github_setup()
+            return
+
+        if "clinic-update" in repo_url.lower():
+            QMessageBox.critical(
+                self,
+                "❌ Repository មិនត្រឹមត្រូវ",
+                "Repository នេះសម្រាប់ Update កម្មវិធី មិនមែនសម្រាប់ Cloud Sync ទេ។\n\n"
+                "សូមកំណត់ repository ផ្សេងសម្រាប់ទិន្នន័យ Cloud Sync។"
+            )
+            self.show_github_setup()
+            return
+
+        if not self._ensure_cloud_token_for_write():
+            return
+
+        delete_file_name, period_label, ok = self._get_cloud_download_period_choice()
+        if not ok:
+            return
+
+        if not delete_file_name:
+            saved_url = self.config.get('CATEGORIES', 'cloud_sync_url', fallback="").strip()
+            cloud_url, url_ok = self._get_cloud_sync_url_input(saved_url)
+            if not url_ok or not cloud_url.strip():
+                return
+            parsed_path = urllib.parse.urlparse(cloud_url.strip()).path
+            delete_file_name = os.path.basename(parsed_path) or ""
+            period_label = "URL ដែលបានបញ្ចូល"
+
+        delete_file_name = str(delete_file_name or "").strip().replace("\\", "/")
+        if not delete_file_name or "/" in delete_file_name or not delete_file_name.lower().endswith(".db"):
+            QMessageBox.warning(
+                self,
+                "⚠️ File មិនត្រឹមត្រូវ",
+                "មិនអាចកំណត់ file Cloud ដែលត្រូវលុបបានទេ។\n\n"
+                "សូមជ្រើសរើសរយៈពេល ឬ URL ដែលជា file .db ត្រឹមត្រូវ។"
+            )
+            return
+
+        cloud_url = self._github_repo_file_raw_url(repo_url, delete_file_name)
+        ok_url, url_error = self._preflight_cloud_sync_url(cloud_url) if cloud_url else (False, "មិនអាចបង្កើត Cloud URL បានទេ។")
+        if not ok_url:
+            QMessageBox.warning(
+                self,
+                "⚠️ រក file មិនឃើញ",
+                f"រកមិនឃើញ file នេះនៅ Cloud:\n{delete_file_name}\n\n{url_error}"
+            )
+            return
+
+        first_confirm = QMessageBox.question(
+            self,
+            "🗑️ បញ្ជាក់ការលុប Cloud",
+            f"តើអ្នកចង់លុប file នេះពី Cloud មែនទេ?\n\n"
+            f"File: {delete_file_name}\n"
+            f"រយៈពេល: {period_label}\n\n"
+            "ការលុបនេះនឹងលុបចេញពី GitHub repository។",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if first_confirm != QMessageBox.Yes:
+            return
+
+        second_confirm = QMessageBox.question(
+            self,
+            "⚠️ បញ្ជាក់ម្ដងទៀត",
+            "សូមបញ្ជាក់ម្ដងទៀត៖ តើពិតជាចង់លុប file Cloud នេះមែនទេ?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if second_confirm != QMessageBox.Yes:
+            return
+
+        progress = None
+        temp_git_dir = None
+        try:
+            progress = QProgressDialog("កំពុងលុបទិន្នន័យពី Cloud...", "បោះបង់", 0, 100, self)
+            style_progress_dialog(progress)
+            progress.setWindowTitle("🗑️ លុបទិន្នន័យ Cloud")
+            progress.setWindowModality(Qt.WindowModal)  # type: ignore[attr-defined]
+            progress.setMinimumDuration(0)
+            progress.setAutoClose(False)
+            progress.show()
+            QApplication.processEvents()
+
+            temp_root = os.path.join(tempfile.gettempdir(), "ClinicManager")
+            os.makedirs(temp_root, exist_ok=True)
+
+            progress.setValue(10)
+            progress.setLabelText("កំពុងភ្ជាប់ទៅ Cloud repository...")
+            QApplication.processEvents()
+            temp_git_dir = self._create_cloud_git_workspace(repo_url, temp_root, "temp_github_cloud_delete_")
+
+            target_file = os.path.abspath(os.path.join(temp_git_dir, delete_file_name))
+            repo_root = os.path.abspath(temp_git_dir)
+            if os.path.commonpath([repo_root, target_file]) != repo_root:
+                raise RuntimeError("Cloud file path is outside the repository.")
+            if not os.path.exists(target_file):
+                raise FileNotFoundError(delete_file_name)
+
+            progress.setValue(35)
+            progress.setLabelText("កំពុងលុប file...")
+            QApplication.processEvents()
+            os.remove(target_file)
+
+            metadata = {
+                "version": APP_VERSION,
+                "deleted_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "deleted_by": self.current_user or "login-screen",
+                "deleted_file": delete_file_name,
+                "period": period_label,
+                "note": "Cloud data file deleted from application"
+            }
+            with open(os.path.join(temp_git_dir, "report_metadata.json"), "w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+            published, failed_step, git_error = self._publish_cloud_git_workspace(
+                temp_git_dir,
+                f"Delete cloud data {period_label} - {delete_file_name}",
+                progress,
+                45,
+                50,
+            )
+            if not published:
+                progress.close()
+                QMessageBox.critical(
+                    self,
+                    "❌ លុប Cloud បរាជ័យ",
+                    f"កំហុសពេល {failed_step.lower()}\n\n{git_error}"
+                )
+                return
+
+            saved_url = self.config.get('CATEGORIES', 'cloud_sync_url', fallback="").strip()
+            if saved_url and saved_url == cloud_url:
+                self.config.remove_option('CATEGORIES', 'cloud_sync_url')
+                self._save_settings()
+
+            progress.setValue(100)
+            progress.close()
+            QMessageBox.information(
+                self,
+                "✅ លុប Cloud ជោគជ័យ",
+                f"បានលុប file ពី Cloud រួចរាល់។\n\n"
+                f"File: {delete_file_name}\n"
+                f"រយៈពេល: {period_label}"
+            )
+
+        except subprocess.TimeoutExpired:
+            if progress:
+                progress.close()
+            QMessageBox.critical(
+                self,
+                "❌ Timeout",
+                "ការលុប Cloud ចំណាយពេលយូរពេក។ សូមពិនិត្យ Internet Connection។"
+            )
+        except Exception as e:
+            if progress:
+                progress.close()
+            QMessageBox.critical(
+                self,
+                "❌ កំហុស",
+                f"មិនអាចលុបទិន្នន័យ Cloud បានទេ:\n{self._redact_cloud_token(str(e))}"
+            )
+        finally:
+            if temp_git_dir:
+                try:
+                    shutil.rmtree(temp_git_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
     def show_telegram_bot_setup(self):
         """បង្ហាញ Dialog សម្រាប់កំណត់ Telegram Bot"""
         dialog = TelegramBotSetupDialog(self)
@@ -2515,6 +2730,136 @@ class LoginDialog(BaseDialog):
             else:
                 QMessageBox.warning(self, "⚠️ មិនពេញលេញ", "សូមបញ្ចូលទាំង Bot Token និង Chat ID!")
 
+    def _ensure_settings_categories(self):
+        if 'CATEGORIES' not in self.config:
+            self.config['CATEGORIES'] = {}
+
+    def _save_settings(self):
+        self._ensure_settings_categories()
+        with open(self.settings_file, 'w', encoding='utf-8') as f:
+            self.config.write(f)
+
+    def _cloud_token_username(self):
+        username = (self.current_user or "").strip() or "login_screen"
+        return re.sub(r"[^A-Za-z0-9_-]", "_", username)
+
+    def _cloud_token_key(self):
+        return f"cloud_github_token_{self._cloud_token_username()}"
+
+    def _get_cloud_github_token(self):
+        self._ensure_settings_categories()
+        token = self.config.get('CATEGORIES', self._cloud_token_key(), fallback="").strip()
+        if token:
+            return token
+
+        legacy_token = self.config.get('CATEGORIES', 'cloud_github_token', fallback="").strip()
+        if legacy_token and (self.current_user or "").strip():
+            self.config.set('CATEGORIES', self._cloud_token_key(), legacy_token)
+            self.config.remove_option('CATEGORIES', 'cloud_github_token')
+            self._save_settings()
+            return legacy_token
+        return ""
+
+    def _set_cloud_github_token(self, token):
+        self._ensure_settings_categories()
+        self.config.set('CATEGORIES', self._cloud_token_key(), token)
+        if self.config.has_option('CATEGORIES', 'cloud_github_token'):
+            self.config.remove_option('CATEGORIES', 'cloud_github_token')
+        self._save_settings()
+
+    def _ensure_cloud_token_for_write(self):
+        token = self._get_cloud_github_token()
+        if token:
+            return True
+
+        reply = QMessageBox.question(
+            self,
+            "🔑 ត្រូវការ GitHub Token",
+            f"User នេះ ({self.current_user or 'login-screen'}) មិនទាន់មាន GitHub Token ទេ។\n\n"
+            "ការកែ ឬលុបទិន្នន័យ Cloud ត្រូវការ GitHub Token ដើម្បីសរសេរទៅ repository។\n\n"
+            "តើអ្នកចង់កំណត់ Token ឥឡូវនេះទេ?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply != QMessageBox.Yes:
+            return False
+
+        self.show_github_token_setup()
+        return bool(self._get_cloud_github_token())
+
+    def show_github_token_setup(self):
+        """Save a GitHub token for Cloud Sync edit/delete on this computer."""
+        self._ensure_settings_categories()
+        current_token = self._get_cloud_github_token()
+        username = self.current_user or "login-screen"
+        dialog = QInputDialog(self)
+        dialog.setInputMode(QInputDialog.TextInput)
+        dialog.setTextEchoMode(QLineEdit.Password)
+        dialog.setWindowTitle("🔑 កំណត់ GitHub Token")
+        dialog.setLabelText(
+            f"បញ្ចូល GitHub Personal Access Token សម្រាប់ User: {username}\n\n"
+            "• Token ត្រូវមានសិទ្ធិ write ទៅ repository Cloud Sync\n"
+            "• User ផ្សេងត្រូវបញ្ចូល token ដោយឡែក\n"
+            "• ទុកឲ្យទទេ រួចចុច OK ដើម្បីលុប token ចាស់\n"
+            "• Token នឹងរក្សាទុកតែលើ PC នេះប៉ុណ្ណោះ"
+        )
+        dialog.setTextValue(current_token)
+        dialog.setOkButtonText("រក្សាទុក")
+        dialog.setCancelButtonText("បោះបង់")
+        dialog.resize(620, 220)
+        self._style_url_input_dialog(dialog)
+
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        token = dialog.textValue().strip()
+        self._set_cloud_github_token(token)
+        if token:
+            QMessageBox.information(
+                self,
+                "✅ បានរក្សាទុក",
+                f"GitHub Token ត្រូវបានរក្សាទុកសម្រាប់ User: {username} លើ PC នេះ។"
+            )
+        else:
+            QMessageBox.information(self, "✅ បានលុប", f"GitHub Token របស់ User: {username} ត្រូវបានលុបចេញរួចហើយ។")
+
+    def _cloud_git_env(self):
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        return env
+
+    def _cloud_repo_url_for_git(self, repo_url):
+        token = self._get_cloud_github_token()
+        repo_url = str(repo_url or "").strip()
+        if not token:
+            return repo_url
+
+        quoted_token = urllib.parse.quote(token, safe="")
+        if repo_url.startswith("https://github.com/"):
+            parsed = urllib.parse.urlparse(repo_url)
+            return urllib.parse.urlunparse((
+                parsed.scheme,
+                f"x-access-token:{quoted_token}@{parsed.netloc}",
+                parsed.path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            ))
+
+        if repo_url.startswith("git@github.com:"):
+            repo_path = repo_url[len("git@github.com:"):].strip("/")
+            return f"https://x-access-token:{quoted_token}@github.com/{repo_path}"
+
+        return repo_url
+
+    def _redact_cloud_token(self, text):
+        text = str(text or "")
+        token = self._get_cloud_github_token()
+        if token:
+            text = text.replace(token, "***")
+            text = text.replace(urllib.parse.quote(token, safe=""), "***")
+        return re.sub(r"https://x-access-token:[^@\s]+@github\.com/", "https://x-access-token:***@github.com/", text)
+
     def _check_git_installed(self):
         """ពិនិត្យថា Git ដំឡើងហើយឬនៅ"""
         try:
@@ -2535,13 +2880,15 @@ class LoginDialog(BaseDialog):
         """Clone the Cloud repo when possible so older uploaded files are preserved."""
         os.makedirs(temp_root, exist_ok=True)
         temp_git_dir = tempfile.mkdtemp(prefix=prefix, dir=temp_root)
+        git_repo_url = self._cloud_repo_url_for_git(repo_url)
         clone_result = subprocess.run(
-            ['git', 'clone', '--depth', '1', repo_url, temp_git_dir],
+            ['git', 'clone', '--depth', '1', git_repo_url, temp_git_dir],
             capture_output=True,
             text=True,
             encoding='utf-8',
             errors='replace',
             timeout=120,
+            env=self._cloud_git_env(),
             **_subprocess_no_window_kwargs()
         )
 
@@ -2553,7 +2900,7 @@ class LoginDialog(BaseDialog):
         init_commands = [
             ['git', 'init'],
             ['git', 'branch', '-M', 'main'],
-            ['git', 'remote', 'add', 'origin', repo_url],
+            ['git', 'remote', 'add', 'origin', git_repo_url],
         ]
         for cmd in init_commands:
             result = subprocess.run(
@@ -2564,10 +2911,12 @@ class LoginDialog(BaseDialog):
                 errors='replace',
                 cwd=temp_git_dir,
                 timeout=120,
+                env=self._cloud_git_env(),
                 **_subprocess_no_window_kwargs()
             )
             if result.returncode != 0:
-                raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Git workspace setup failed.")
+                output = self._redact_cloud_token(result.stderr.strip() or result.stdout.strip())
+                raise RuntimeError(output or "Git workspace setup failed.")
         return temp_git_dir
 
     def _publish_cloud_git_workspace(self, temp_git_dir, commit_message, progress, start_value=60, span=40):
@@ -2594,10 +2943,11 @@ class LoginDialog(BaseDialog):
                 errors='replace',
                 cwd=temp_git_dir,
                 timeout=120,
+                env=self._cloud_git_env(),
                 **_subprocess_no_window_kwargs()
             )
             if result.returncode != 0:
-                output = f"{result.stderr}\n{result.stdout}".strip()
+                output = self._redact_cloud_token(f"{result.stderr}\n{result.stdout}".strip())
                 if "nothing to commit" in output.lower():
                     continue
                 return False, msg, output
@@ -2956,10 +3306,9 @@ class LoginDialog(BaseDialog):
             "ឧទាហរណ៍:\n"
             "https://github.com/saratboy1988-a11y/Clinic-Cloud-Sync.git\n\n"
             "ចំណាំ៖\n"
-            "• អ្នកត្រូវមាន GitHub Account\n"
             "• បង្កើត Repository មុន (Public ឬ Private)\n"
             "• កុំប្រើ Clinic-Update repository ព្រោះវាសម្រាប់ Update កម្មវិធី\n"
-            "• ត្រូវការ GitHub Token បើជា Private Repo",
+            "• កំណត់ GitHub Token ដាច់ដោយឡែកសម្រាប់ Upload/Edit",
             text=self.config.get('CATEGORIES', 'cloud_sync_repo_url', fallback="https://github.com/saratboy1988-a11y/Clinic-Cloud-Sync.git")
         )
 
@@ -2985,9 +3334,9 @@ class LoginDialog(BaseDialog):
                 return
 
             # រក្សាទុក
+            self._ensure_settings_categories()
             self.config.set('CATEGORIES', 'cloud_sync_repo_url', repo_url)
-            with open(self.settings_file, 'w', encoding='utf-8') as f:
-                self.config.write(f)
+            self._save_settings()
             db.logger.info(f"Cloud Sync GitHub Repo URL saved: {repo_url}")
 
             QMessageBox.information(
@@ -3148,15 +3497,6 @@ class LoginDialog(BaseDialog):
             )
             return
 
-        # ៣. រក្សាទុក URL ដោយស្វ័យប្រវត្តិ (មិនបង្ហាញ popup បន្ថែម)
-        try:
-            self.config.set('CATEGORIES', 'cloud_sync_url', url)
-            with open(self.settings_file, 'w', encoding='utf-8') as f:
-                self.config.write(f)
-            db.logger.info(f"Cloud Sync URL saved: {url}")
-        except Exception as e:
-            db.logger.error(f"Failed to save Cloud Sync URL: {e}")
-
         # ២. ផ្ទៀងផ្ទាត់ URL បឋម
         if not url.startswith(('http://', 'https://')):
             QMessageBox.warning(
@@ -3169,8 +3509,53 @@ class LoginDialog(BaseDialog):
         # ៣.១ ពិនិត្យ URL មុនពេលទាញយក
         is_valid_url, validation_message = self._preflight_cloud_sync_url(url)
         if not is_valid_url:
-            QMessageBox.warning(self, "❌ URL មិនអាចប្រើបាន", validation_message)
-            return
+            fallback_url = ""
+            if download_file_name and saved_url and saved_url.strip() and saved_url.strip() != url:
+                reply = QMessageBox.question(
+                    self,
+                    "⚠️ រក file មិនឃើញ",
+                    f"រកមិនឃើញ file នេះនៅ Cloud:\n{download_file_name}\n\n"
+                    "តើចង់ប្រើ URL ចុងក្រោយដែលបានរក្សាទុកវិញទេ?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                if reply == QMessageBox.Yes:
+                    fallback_url = saved_url.strip()
+                    download_period_label = "Cloud file ចុងក្រោយ"
+
+            if not fallback_url:
+                reply = QMessageBox.question(
+                    self,
+                    "⚠️ URL មិនអាចប្រើបាន",
+                    f"{validation_message}\n\n"
+                    "តើចង់បញ្ចូល URL ដោយផ្ទាល់វិញទេ?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                if reply == QMessageBox.Yes:
+                    fallback_url, ok = self._get_cloud_sync_url_input(saved_url or initial_url)
+                    if not ok or not fallback_url or not fallback_url.strip():
+                        return
+                    fallback_url = fallback_url.strip()
+                    download_period_label = "URL ដែលបានបញ្ចូល"
+
+            if not fallback_url:
+                return
+
+            fallback_valid, fallback_message = self._preflight_cloud_sync_url(fallback_url)
+            if not fallback_valid:
+                QMessageBox.warning(self, "❌ URL មិនអាចប្រើបាន", fallback_message)
+                return
+            url = fallback_url
+
+        # ៣.២ រក្សាទុក URL ក្រោយពេលពិនិត្យថាប្រើបាន
+        try:
+            self.config.set('CATEGORIES', 'cloud_sync_url', url)
+            with open(self.settings_file, 'w', encoding='utf-8') as f:
+                self.config.write(f)
+            db.logger.info(f"Cloud Sync URL saved: {url}")
+        except Exception as e:
+            db.logger.error(f"Failed to save Cloud Sync URL: {e}")
 
         # ៤. បង្កើត Backup មុនពេលធ្វើអ្វីផ្សេង
         try:
@@ -4688,11 +5073,17 @@ class App(QWidget):
         self.btn_advanced_query.clicked.connect(self.open_advanced_query)
         analytics_layout.addWidget(self.btn_advanced_query, 6, 2, 1, 2)
 
+        self.btn_user_audit = QPushButton("👤 ពិនិត្យទិន្នន័យតាម User")
+        self.btn_user_audit.setMinimumHeight(36)
+        self.btn_user_audit.setStyleSheet("background-color: #f39c12; color: black; font-weight: bold; padding: 8px 12px; border-radius: 5px;")
+        self.btn_user_audit.clicked.connect(self.open_user_audit_dialog)
+        analytics_layout.addWidget(self.btn_user_audit, 7, 0, 1, 4)
+
         # Total Count Label
         self.lbl_analytics_count = QLabel("ក្រុមសរុប: 0")
         self.lbl_analytics_count.setAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
         self.lbl_analytics_count.setStyleSheet("background-color: #111820; border: 1px solid #0fbcf9; border-radius: 5px; padding: 8px; font-weight: bold; color: #00cec9; font-size: 15px;")
-        analytics_layout.addWidget(self.lbl_analytics_count, 7, 0, 1, 4)
+        analytics_layout.addWidget(self.lbl_analytics_count, 8, 0, 1, 4)
 
         layout.addWidget(analytics_group)
 
@@ -5487,6 +5878,7 @@ class App(QWidget):
             ("🔍 ស្វែងរកទិន្នន័យ (Search)", self.search, "Alt+F"),
             ("📋 បង្ហាញទាំងអស់ (View All)", self.view, "F5"),
             ("📊 ពិនិត្យស្ថិតិអ្នកជំងឺ", self.show_statistics, None),
+            ("👤 ពិនិត្យទិន្នន័យតាម User / Excel", self.open_user_audit_dialog, None),
             ("📗 ទាញទិន្នន័យចេញ Excel", self.export_excel, "Alt+X"),
             ("📥 នាំចូលទិន្នន័យពី Excel", self.import_excel, None),
             ("📕 ទាញទិន្នន័យចេញ PDF", self.export_pdf, None),
@@ -5531,7 +5923,9 @@ class App(QWidget):
             ("☁️ ទាញពី Cloud", lambda checked=False: self._run_cloud_helper_action("sync_data_initial", refresh_after=True)),
             ("⬆️ ផ្ញើទៅ Cloud", lambda checked=False: self._run_cloud_helper_action("upload_to_cloud")),
             ("✏️ កែទិន្នន័យ Cloud", lambda checked=False: self._run_cloud_helper_action("edit_uploaded_cloud_data")),
+            ("🗑️ លុបទិន្នន័យ Cloud", lambda checked=False: self._run_cloud_helper_action("delete_uploaded_cloud_data")),
             ("⚙️ កំណត់ Cloud Repository", lambda checked=False: self._run_cloud_helper_action("show_github_setup")),
+            ("🔑 កំណត់ GitHub Token", lambda checked=False: self._run_cloud_helper_action("show_github_token_setup")),
             ("❓ ជំនួយ Cloud", lambda checked=False: self._run_cloud_helper_action("show_cloud_sync_help")),
         ]
         for text, handler in cloud_actions:
@@ -6154,7 +6548,8 @@ class App(QWidget):
                 f"{dis_cat_txt}::{dis_next}", self.symptoms.text(), self.paraclinical.text(),
                 self.diagnosis.currentText(), self.treatment.text(), imci_db,
                 self._create_nutrition_string(), self.ref_to.text(), self.service.currentText(),
-                self.remark.text(), self.current_patient_type, branch_code=self.branch_code
+                self.remark.text(), self.current_patient_type, branch_code=self.branch_code,
+                created_by=self.current_user
             )
             self.clear_inputs()
             self.view()
@@ -6361,7 +6756,7 @@ class App(QWidget):
                         self.paraclinical.text(), self.diagnosis.currentText(), self.treatment.text(),
                         imci_db, self._create_nutrition_string(),
                         self.ref_to.text(), self.service.currentText(), self.remark.text(),
-                        self.current_patient_type, existing_branch_code
+                        self.current_patient_type, existing_branch_code, updated_by=self.current_user
                     )
                     self.view()
                     self.statusBar.showMessage(f"កែប្រែទិន្នន័យ ID {self.selected_id} បានជោគជ័យ!", 5000)
@@ -7098,6 +7493,225 @@ class App(QWidget):
                 self.update_next_serial_no()
         finally:
             helper.deleteLater()
+
+    def open_user_audit_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("ពិនិត្យទិន្នន័យតាម User")
+        dialog.resize(1180, 720)
+        dialog.setStyleSheet("""
+            QDialog { background-color: #111820; color: #f5f6fa; }
+            QLabel { color: #dfe6e9; font-weight: bold; }
+            QComboBox, QDateEdit {
+                background-color: #1e272e;
+                color: #f5f6fa;
+                border: 1px solid #485460;
+                border-radius: 5px;
+                padding: 6px 8px;
+                min-height: 30px;
+            }
+            QTableWidget {
+                background-color: #111820;
+                alternate-background-color: #1e272e;
+                color: #f5f6fa;
+                border: 1px solid #485460;
+                gridline-color: #485460;
+                selection-background-color: #0fbcf9;
+                selection-color: #000000;
+            }
+            QTableWidget::item { padding: 5px; }
+            QHeaderView::section {
+                background-color: #0fbcf9;
+                color: #000000;
+                border: none;
+                padding: 8px;
+                font-weight: bold;
+            }
+        """)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        title = QLabel("👤 ពិនិត្យ និងទាញយកទិន្នន័យតាម User")
+        title.setAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
+        title.setStyleSheet("color: #0fbcf9; font-size: 20px; font-weight: bold;")
+        layout.addWidget(title)
+
+        filter_row = QHBoxLayout()
+        user_combo = QComboBox()
+        user_combo.addItem("All")
+        user_combo.addItems(db.get_usernames(self.active_branch_code))
+        if not self.is_admin:
+            user_combo.setCurrentText(self.current_user)
+            user_combo.setEnabled(False)
+
+        start_date = QDateEdit()
+        start_date.setCalendarPopup(True)
+        start_date.setDisplayFormat("dd/MM/yyyy")
+        start_date.setDate(QDate.currentDate())
+
+        end_date = QDateEdit()
+        end_date.setCalendarPopup(True)
+        end_date.setDisplayFormat("dd/MM/yyyy")
+        end_date.setDate(QDate.currentDate())
+
+        btn_search = QPushButton("🔍 ស្វែងរក")
+        btn_search.setMinimumHeight(38)
+        btn_search.setStyleSheet("background-color: #0fbcf9; color: black; font-weight: bold; border-radius: 5px; padding: 8px 18px;")
+        btn_export = QPushButton("📊 ទាញយក Excel")
+        btn_export.setMinimumHeight(38)
+        btn_export.setStyleSheet("background-color: #20bf6b; color: white; font-weight: bold; border-radius: 5px; padding: 8px 18px;")
+
+        filter_row.addWidget(QLabel("User:"))
+        filter_row.addWidget(user_combo, 2)
+        filter_row.addWidget(QLabel("ពីថ្ងៃ:"))
+        filter_row.addWidget(start_date, 1)
+        filter_row.addWidget(QLabel("ដល់ថ្ងៃ:"))
+        filter_row.addWidget(end_date, 1)
+        filter_row.addWidget(btn_search)
+        filter_row.addWidget(btn_export)
+        layout.addLayout(filter_row)
+
+        summary = QLabel("សរុប: 0 | ត្រឹមត្រូវ: 0 | ត្រូវពិនិត្យ: 0")
+        summary.setMinimumHeight(42)
+        summary.setAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
+        summary.setStyleSheet("background-color: #18212b; border: 1px solid #0fbcf9; border-radius: 6px; color: #f5f6fa; font-size: 15px;")
+        layout.addWidget(summary)
+
+        table = QTableWidget()
+        table.setColumnCount(13)
+        table.setHorizontalHeaderLabels([
+            "ល.រ", "ថ្ងៃ", "លេខ", "ឈ្មោះ", "ភេទ", "អាយុ", "តំបន់",
+            "ជំងឺ", "រោគវិនិច្ឆ័យ", "សេវា", "User", "ស្ថានភាព", "ចំណុចត្រូវពិនិត្យ"
+        ])
+        table.setEditTriggers(QTableWidget.NoEditTriggers)  # type: ignore[attr-defined]
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectRows)  # type: ignore[attr-defined]
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(table, 1)
+
+        audit_state = {"records": [], "result": None, "user": "", "start": "", "end": ""}
+
+        def run_search():
+            if start_date.date() > end_date.date():
+                QMessageBox.warning(dialog, "ថ្ងៃមិនត្រឹមត្រូវ", "ថ្ងៃចាប់ផ្តើម មិនអាចធំជាង ថ្ងៃបញ្ចប់បានទេ។")
+                return
+
+            selected_user = user_combo.currentText()
+            result = db.get_user_patient_audit(
+                selected_user,
+                start_date.date().toPyDate(),
+                end_date.date().toPyDate(),
+                self.active_branch_code
+            )
+            records = result["records"]
+            audit_state["records"] = records
+            audit_state["result"] = result
+            audit_state["user"] = selected_user
+            audit_state["start"] = start_date.date().toString("dd/MM/yyyy")
+            audit_state["end"] = end_date.date().toString("dd/MM/yyyy")
+            summary.setText(
+                f"User: {selected_user} | សរុប: {result['total']} | "
+                f"ត្រឹមត្រូវ: {result['valid']} | ត្រូវពិនិត្យ: {result['issues']}"
+            )
+            table.setRowCount(len(records))
+            for row_idx, record in enumerate(records):
+                values = [
+                    row_idx + 1,
+                    record["date"],
+                    record["serial_no"],
+                    record["name"],
+                    record["sex"],
+                    record["age"],
+                    record["area"],
+                    record["disease"],
+                    record["diagnosis"],
+                    record["service"],
+                    record["created_by"],
+                    record["status"],
+                    "; ".join(record["issues"]),
+                ]
+                for col_idx, value in enumerate(values):
+                    item = QTableWidgetItem(str(value or ""))
+                    if record["issues"]:
+                        item.setBackground(QColor("#5c2f24"))
+                    table.setItem(row_idx, col_idx, item)
+            self.statusBar.showMessage(f"User audit loaded: {len(records)} records", 4000)
+
+        def export_audit():
+            records = audit_state.get("records") or []
+            if not records:
+                QMessageBox.information(dialog, "Export", "សូមស្វែងរកទិន្នន័យជាមុនសិន។")
+                return
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "User Audit"
+            result = audit_state.get("result") or {"total": len(records), "valid": 0, "issues": 0}
+            selected_user = audit_state.get("user") or user_combo.currentText()
+            start_text = audit_state.get("start") or start_date.date().toString("dd/MM/yyyy")
+            end_text = audit_state.get("end") or end_date.date().toString("dd/MM/yyyy")
+
+            ws.merge_cells("A1:P1")
+            ws["A1"] = "របាយការណ៍ពិនិត្យទិន្នន័យតាម User"
+            ws["A1"].font = Font(bold=True, size=16, color="0FBCF9")
+            ws["A1"].alignment = Alignment(horizontal="center")
+            ws["A2"] = "User"
+            ws["B2"] = selected_user
+            ws["D2"] = "ចន្លោះថ្ងៃ"
+            ws["E2"] = f"{start_text} - {end_text}"
+            ws["A3"] = "សរុប"
+            ws["B3"] = result["total"]
+            ws["D3"] = "ត្រឹមត្រូវ"
+            ws["E3"] = result["valid"]
+            ws["G3"] = "ត្រូវពិនិត្យ"
+            ws["H3"] = result["issues"]
+            for cell_ref in ("A2", "D2", "A3", "D3", "G3"):
+                ws[cell_ref].font = Font(bold=True)
+
+            headers = [
+                "No", "Date", "Serial", "Name", "Sex", "Age", "Area", "Disease",
+                "Diagnosis", "Service", "Created By", "Created At", "Updated By",
+                "Updated At", "Status", "Issues"
+            ]
+            ws.append([])
+            ws.append(headers)
+            header_fill = PatternFill("solid", fgColor="0FBCF9")
+            header_row = 5
+            for cell in ws[header_row]:
+                cell.font = Font(bold=True, color="000000")
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center")
+            issue_fill = PatternFill("solid", fgColor="FADBD8")
+            for index, record in enumerate(records, 1):
+                ws.append([
+                    index, record["date"], record["serial_no"], record["name"],
+                    record["sex"], record["age"], record["area"], record["disease"],
+                    record["diagnosis"], record["service"], record["created_by"],
+                    record["created_at"], record["updated_by"], record["updated_at"],
+                    record["status"], "; ".join(record["issues"])
+                ])
+                if record["issues"]:
+                    for cell in ws[ws.max_row]:
+                        cell.fill = issue_fill
+            for column_cells in ws.columns:
+                max_length = max(len(str(cell.value or "")) for cell in column_cells)
+                ws.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 10), 36)
+            ws.freeze_panes = "A6"
+
+            safe_user = re.sub(r"[^A-Za-z0-9_-]", "_", selected_user or "All")
+            safe_start = start_text.replace("/", "-")
+            safe_end = end_text.replace("/", "-")
+            filename = f"UserAudit_{safe_user}_{safe_start}_to_{safe_end}.xlsx"
+            save_excel_report(dialog, wb, filename, "Save User Audit Excel", "បាននាំចេញរបាយការណ៍ User Audit ទៅ Excel ជោគជ័យ!")
+
+        btn_search.clicked.connect(run_search)
+        btn_export.clicked.connect(export_audit)
+        run_search()
+        dialog.exec_()
 
     def generate_advanced_report(self):
         report_handler.generate_advanced_report(self)
@@ -8363,13 +8977,62 @@ class App(QWidget):
         
         cal = QCalendarWidget()
         cal.setGridVisible(True)
+        cal.setLocale(QLocale(QLocale.Khmer, QLocale.Cambodia))
+        cal.setFirstDayOfWeek(Qt.Monday)  # type: ignore[attr-defined]
         # រចនាប្រតិទិនឱ្យស៊ីជាមួយពណ៌កម្មវិធី
         cal.setStyleSheet("""
-            QCalendarWidget QWidget { background-color: #2f3640; color: white; }
-            QCalendarWidget QAbstractItemView:enabled { 
-                color: white; selection-background-color: #00cec9; selection-color: black; 
+            QCalendarWidget QWidget {
+                background-color: #2f3640;
+                color: #f5f6fa;
+                alternate-background-color: #222b35;
             }
-            QCalendarWidget QToolButton { color: white; background-color: #1e272e; }
+            QCalendarWidget QAbstractItemView:enabled { 
+                background-color: #2f3640;
+                color: #f5f6fa;
+                selection-background-color: #00cec9;
+                selection-color: #000000;
+            }
+            QCalendarWidget QAbstractItemView:disabled {
+                color: #8b97a3;
+                background-color: #26313b;
+            }
+            QCalendarWidget QHeaderView::section {
+                background-color: #f5f6fa;
+                color: #111820;
+                font-weight: bold;
+                border: 1px solid #dfe6e9;
+                padding: 6px 4px;
+            }
+            QCalendarWidget QTableView {
+                alternate-background-color: #26313b;
+                gridline-color: #485460;
+                outline: 0;
+            }
+            QCalendarWidget QToolButton {
+                color: #f5f6fa;
+                background-color: #1e272e;
+                border: 1px solid #3d5368;
+                border-radius: 4px;
+                padding: 5px 8px;
+                font-weight: bold;
+            }
+            QCalendarWidget QToolButton:hover {
+                background-color: #34495e;
+            }
+            QCalendarWidget QMenu {
+                background-color: #1e272e;
+                color: #f5f6fa;
+                border: 1px solid #485460;
+            }
+            QCalendarWidget QSpinBox {
+                background-color: #1e272e;
+                color: #f5f6fa;
+                selection-background-color: #00cec9;
+                selection-color: #000000;
+                border: 1px solid #485460;
+                border-radius: 4px;
+                padding: 3px;
+            }
         """)
 
         # ព្យាយាមកំណត់ប្រតិទិនទៅតាមថ្ងៃដែលបានវាយក្នុង LineEdit (បើមាន)

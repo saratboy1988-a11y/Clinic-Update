@@ -462,6 +462,11 @@ def online_license_is_strict(config=None):
     return bool(online_license_is_enabled(config) and config.get("strict_online"))
 
 
+def is_online_license_key(license_key):
+    key = str(license_key or "").strip()
+    return bool(key and "-" in key)
+
+
 def _license_api_post(path, payload, config=None):
     config = config or load_online_license_config()
     base_url = str(config.get("api_base_url", "")).rstrip("/")
@@ -848,6 +853,10 @@ class LicenseDialog(BaseDialog):
                 show_warning(self, f"Online activation failed: {msg}")
                 return
 
+            if is_online_license_key(key):
+                show_warning(self, f"Online activation failed: {msg}")
+                return
+
             fallback_valid, fallback_msg = validate_license(email, mid, key)
             if not fallback_valid:
                 show_warning(self, f"Online activation failed: {msg}")
@@ -979,6 +988,8 @@ class LicenseStatusDialog(BaseDialog):
 
         lic_info = db.get_license_info()
         if lic_info and lic_info[2]:
+            if is_online_license_key(lic_info[2]):
+                return False, f"Saved online license invalid: {online_msg}"
             valid, msg = validate_license(lic_info[3], self.machine_id, lic_info[2])
             if valid:
                 return True, f"Offline license valid.\nExpires: {msg}"
@@ -9318,6 +9329,8 @@ if __name__ == "__main__":
     if online_valid:
         needs_activation = False
     elif not current_key:
+        needs_activation = True
+    elif is_online_license_key(current_key):
         needs_activation = True
     else:
         is_valid, _ = validate_license(current_email, mid, current_key)

@@ -2150,10 +2150,10 @@ class LoginDialog(BaseDialog):
         creator_line1.setTextFormat(Qt.RichText)  # type: ignore[attr-defined]
 
         # Line 2: Social links
-        social_line = QLabel('''
-            <a href="https://t.me/nousarat" style="color: #0088cc; text-decoration: none; font-weight: bold;">✈️ Telegram</a>
+        social_line = QLabel(f'''
+            <a href="{TELEGRAM_URL}" style="color: #0088cc; text-decoration: none; font-weight: bold;">✈️ Telegram</a>
             <span style="color: #d2dae2;">&nbsp;|&nbsp;</span>
-            <a href="https://www.youtube.com/@TechFree2026" style="color: #ff0000; text-decoration: none; font-weight: bold;">📺 YouTube</a>
+            <a href="{YOUTUBE_URL}" style="color: #ff0000; text-decoration: none; font-weight: bold;">📺 YouTube</a>
         ''')
         social_line.setOpenExternalLinks(True)
         social_line.setAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
@@ -4611,8 +4611,8 @@ class App(QWidget):
         footer_layout = QHBoxLayout()
         creator_info = QLabel('រក្សាសិទ្ធិដោយ៖ <b>នូរ សារ៉ាត់ (NOU SARAT)</b>')
         creator_info.setStyleSheet("color: #f5f6fa; font-size: 13px; font-weight: bold;")
-        tg_link = QLabel('<a href="https://t.me/nousarat" style="color: #0fbcf9; text-decoration: none;">✈️ Telegram</a>')
-        yt_link = QLabel('<a href="https://www.youtube.com/@TechFree2026" style="color: #ff4757; text-decoration: none;">📺 YouTube</a>')
+        tg_link = QLabel(f'<a href="{TELEGRAM_URL}" style="color: #0fbcf9; text-decoration: none;">✈️ Telegram</a>')
+        yt_link = QLabel(f'<a href="{YOUTUBE_URL}" style="color: #ff4757; text-decoration: none;">📺 YouTube</a>')
         separator_1 = QLabel("|")
         separator_2 = QLabel("|")
         separator_1.setStyleSheet("color: #d2dae2; font-weight: bold;")
@@ -5934,6 +5934,38 @@ class App(QWidget):
             self.cloud_menu.addAction(action)
         self.cloud_btn.setMenu(self.cloud_menu)
         action_layout.addWidget(self.cloud_btn)
+
+        self.telegram_btn = create_telegram_button()
+        self.telegram_btn.setCursor(Qt.PointingHandCursor)  # type: ignore[attr-defined]
+        self.telegram_btn.setStyleSheet("""
+            QPushButton {
+                background: #0088cc;
+                color: white;
+                padding: 6px 13px;
+                border-radius: 5px;
+                font-weight: bold;
+                min-height: 25px;
+                text-decoration: none;
+            }
+            QPushButton:hover { background: #129fe3; }
+        """)
+        action_layout.addWidget(self.telegram_btn)
+
+        self.youtube_btn = create_youtube_button()
+        self.youtube_btn.setCursor(Qt.PointingHandCursor)  # type: ignore[attr-defined]
+        self.youtube_btn.setStyleSheet("""
+            QPushButton {
+                background: #ff0000;
+                color: white;
+                padding: 6px 13px;
+                border-radius: 5px;
+                font-weight: bold;
+                min-height: 25px;
+                text-decoration: none;
+            }
+            QPushButton:hover { background: #ff4757; }
+        """)
+        action_layout.addWidget(self.youtube_btn)
         action_layout.addStretch() # រុញប៊ូតុងឱ្យនៅខាងឆ្វេង
 
         # Set Tab Order dynamically based on patient type

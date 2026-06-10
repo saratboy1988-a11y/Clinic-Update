@@ -303,6 +303,43 @@ def style_progress_dialog(progress):
 
 def build_patient_share_database(target_db_path, patient_rows):
     """Create a share-safe database containing only the patient table/data."""
+    def normalize_patient_row(row, patient_columns):
+        values = list(row)
+        normalized = [""] * len(patient_columns)
+
+        if len(values) == len(patient_columns):
+            normalized = values[:]
+        elif "id" in patient_columns and len(values) == len(patient_columns) - 1:
+            # Source rows without id: keep id NULL so SQLite can assign one.
+            normalized[0] = None
+            normalized[1:] = values[:]
+        else:
+            # Older review/import rows usually contain id through branch_code only.
+            copy_count = min(len(values), len(patient_columns))
+            normalized[:copy_count] = values[:copy_count]
+
+        now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        column_defaults = {
+            "patient_type": "Child",
+            "branch_code": getattr(db, "normalize_branch_code", lambda value: str(value or "MAIN"))("MAIN"),
+            "created_by": "share",
+            "created_at": now_text,
+            "updated_by": "",
+            "updated_at": "",
+        }
+
+        for column_name, default_value in column_defaults.items():
+            if column_name in patient_columns:
+                idx = patient_columns.index(column_name)
+                if not str(normalized[idx] or "").strip():
+                    normalized[idx] = default_value
+
+        if "branch_code" in patient_columns:
+            idx = patient_columns.index("branch_code")
+            normalized[idx] = db.normalize_branch_code(normalized[idx])
+
+        return tuple(normalized)
+
     if os.path.exists(target_db_path):
         os.remove(target_db_path)
     with sqlite3.connect(target_db_path) as temp_conn:
@@ -324,9 +361,10 @@ def build_patient_share_database(target_db_path, patient_rows):
 
             if patient_rows:
                 placeholders = ",".join(["?"] * len(patient_columns))
+                normalized_rows = [normalize_patient_row(row, patient_columns) for row in patient_rows]
                 temp_cur.executemany(
                     f"INSERT INTO patient ({','.join(patient_columns)}) VALUES ({placeholders})",
-                    patient_rows
+                    normalized_rows
                 )
 
         temp_conn.commit()

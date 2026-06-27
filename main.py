@@ -3,6 +3,7 @@ import sys
 import os
 import ctypes
 import json
+import base64
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -13,6 +14,7 @@ import re
 import hashlib
 import platform
 import ssl
+import binascii
 from datetime import datetime
 from PyQt5.QtCore import QTimer
 
@@ -95,6 +97,19 @@ APP_NAME = "ClinicManager"
 ONLINE_LICENSE_CONFIG_FILE = "license_server_config.json"
 ONLINE_LICENSE_STORE_FILE = "online_license.json"
 ONLINE_LICENSE_GRACE_DAYS = 3
+UPDATE_MANIFEST_PUBLIC_KEY_FILE = "update_public_key.pem"
+UPDATE_MANIFEST_SIGNATURE_FIELD = "signature"
+UPDATE_MANIFEST_SIGNATURE_ALGORITHM = "ed25519"
+UPDATE_INSTALLER_SILENT_ARGS = ["/SP-", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
+SECRET_STORAGE_SERVICE = "ClinicManager"
+ROLE_POLICY_FILE_NAME = "roles_policy.json"
+ROLE_POLICY_PUBLIC_KEY_FILE = "role_policy_public_key.pem"
+ROLE_POLICY_SIGNATURE_FIELD = "signature"
+ROLE_POLICY_SIGNATURE_ALGORITHM = "ed25519"
+CLOUD_DB_PACKAGE_FORMAT = "ClinicManagerCloudDB"
+CLOUD_DB_PACKAGE_VERSION = 1
+CLOUD_DB_KDF_ITERATIONS = 390000
+CLOUD_DB_SALT_BYTES = 16
 import shutil
 import sqlite3
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QVBoxLayout,
@@ -121,8 +136,8 @@ from docx import Document
 from docx.shared import Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-# Import license management functions from dedicated module
-from license_manager import generate_license_key, validate_license
+# Import license validation from dedicated module
+from license_manager import validate_license
 
 
 MESSAGE_BOX_STYLESHEET = """
@@ -695,54 +710,6 @@ def validate_saved_online_license(machine_id):
     return False, response.get("message", "Online license invalid.")
 
 
-class LicenseGeneratorDialog(BaseDialog):
-    """ផ្ទាំងសម្រាប់ Admin បង្កើត License Key"""
-    def __init__(self):
-        super().__init__("License Key Generator (Admin)", size=(450, 450))
-        
-        # Input fields
-        self.txt_mid = QLineEdit()
-        self.txt_mid.setPlaceholderText(PLACEHOLDER_MACHINE_ID)
-        self.txt_email = QLineEdit()
-        self.txt_email.setPlaceholderText(PLACEHOLDER_EMAIL)
-        
-        self.duration_combo = QComboBox()
-        self.duration_combo.addItems(["1 ខែ", "3 ខែ", "6 ខែ", "1 ឆ្នាំ", "Lifetime (មួយជីវិត)"])
-        
-        self.txt_result = QTextEdit()
-        self.txt_result.setPlaceholderText(PLACEHOLDER_LICENSE_KEY)
-        self.txt_result.setFixedHeight(100)
-        self.txt_result.setReadOnly(True)
-        
-        # Buttons
-        btn_gen = create_button(f"{ICON_GENERATE} Generate License", COLOR_ACCENT_BLUE, "black", self.generate)
-        btn_copy = create_button(f"{ICON_COPY} Copy Key", "#3498db", "white", self.copy_key)
-        
-        # Add to layout
-        self.add_widget(QLabel("Machine ID:"))
-        self.add_widget(self.txt_mid)
-        self.add_widget(QLabel("Email:"))
-        self.add_widget(self.txt_email)
-        self.add_widget(QLabel("រយះពេលផ្តល់ជូន:"))
-        self.add_widget(self.duration_combo)
-        self.add_widget(btn_gen)
-        self.add_widget(self.txt_result)
-        self.add_widget(btn_copy)
-    
-    def generate(self):
-        key = generate_license_key(self.txt_email.text().strip(), self.txt_mid.text().strip(), self.duration_combo.currentText())
-        self.txt_result.setPlainText(key)
-        show_success(self, "License Key ត្រូវបានបង្កើតជោគជ័យ!")
-    
-    def copy_key(self):
-        key = self.txt_result.toPlainText().strip()
-        if not key:
-            show_warning(self, "មិនមាន License Key ដើម្បីចម្លងទេ!")
-            return
-        copy_to_clipboard(key)
-        show_success(self, "បានចម្លង License Key រួចរាល់!")
-
-
 def create_license_contact_links():
     links = QHBoxLayout()
     links.setSpacing(12)
@@ -851,10 +818,6 @@ class LicenseDialog(BaseDialog):
             layout.addWidget(body_widget)
             return card
         
-        # Secret shortcut for Generator (Ctrl+Shift+G)
-        self.shortcut_gen = QShortcut(QKeySequence("Ctrl+Shift+G"), self)
-        self.shortcut_gen.activated.connect(self.open_generator)
-
         self.add_widget(title)
         self.add_widget(subtitle)
         self.add_widget(make_card("Machine ID", self.txt_mid))
@@ -863,10 +826,6 @@ class LicenseDialog(BaseDialog):
         self.add_widget(make_card("License Key", self.txt_key))
         self.add_widget(btn_activate)
         self.add_layout(create_license_contact_links())
-    
-    def open_generator(self):
-        gen = LicenseGeneratorDialog()
-        gen.exec_()
     
     def activate(self):
         email = self.txt_email.text().strip()
@@ -1202,6 +1161,172 @@ class ChangePasswordDialog(BaseDialog):
             self.accept()
         else:
             show_warning(self, message)
+
+
+class UserRoleManagerDialog(BaseDialog):
+    ROLE_OPTIONS = [
+        ("user", "User ធម្មតា"),
+        ("manager", "Manager / អ្នកគ្រប់គ្រងសាខា"),
+        ("admin", "Admin / គ្រប់គ្រងទាំងអស់"),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__("គ្រប់គ្រងសិទ្ធិ User", size=(760, 560), parent=parent)
+        self.setMinimumSize(700, 500)
+        self.selected_username = ""
+
+        title = QLabel("👥 គ្រប់គ្រងសិទ្ធិ User")
+        title.setAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
+        title.setFont(QFont(get_khmer_font(), 15, QFont.Bold))
+        title.setStyleSheet("color: #0fbcf9; padding: 8px;")
+        self.add_widget(title)
+
+        hint = QLabel(
+            "Admin អាចកំណត់ User ជា Admin ឬ Manager។ Manager អាចប្រើ Cloud Upload/Edit/Delete តែរក្សាទុកតាមសាខារបស់ខ្លួន។"
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #d2dae2; background-color: #1e272e; padding: 8px; border-radius: 6px;")
+        self.add_widget(hint)
+
+        self.user_table = QTableWidget()
+        self.user_table.setColumnCount(4)
+        self.user_table.setHorizontalHeaderLabels(["Username", "Role", "Branch", "Cloud"])
+        self.user_table.setEditTriggers(QTableWidget.NoEditTriggers)  # type: ignore[attr-defined]
+        self.user_table.setSelectionBehavior(QTableWidget.SelectRows)  # type: ignore[attr-defined]
+        self.user_table.verticalHeader().setVisible(False)
+        self.user_table.horizontalHeader().setStretchLastSection(True)
+        self.user_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #111820;
+                alternate-background-color: #1e272e;
+                color: #f5f6fa;
+                gridline-color: #485460;
+                border: 1px solid #485460;
+            }
+            QTableWidget::item:selected {
+                background-color: #0fbcf9;
+                color: #000000;
+            }
+            QHeaderView::section {
+                background-color: #0fbcf9;
+                color: #000000;
+                font-weight: bold;
+                padding: 6px;
+                border: none;
+            }
+        """)
+        self.user_table.itemSelectionChanged.connect(self._load_selected_user)
+        self.add_widget(self.user_table)
+
+        form = QGridLayout()
+        form.setSpacing(8)
+        self.lbl_user = QLabel("User: -")
+        self.role_combo = QComboBox()
+        for value, label in self.ROLE_OPTIONS:
+            self.role_combo.addItem(label, value)
+        self.branch_code = QLineEdit()
+        self.branch_code.setPlaceholderText("Branch Code")
+        self.branch_code.setInputMethodHints(Qt.ImhLatinOnly | Qt.ImhPreferLatin)  # type: ignore[attr-defined]
+        self.branch_code.textChanged.connect(self._force_branch_code_uppercase)
+        self.role_combo.currentIndexChanged.connect(self._on_role_changed)
+        for widget in (self.role_combo, self.branch_code):
+            widget.setMinimumHeight(36)
+            widget.setStyleSheet("background-color: #1e272e; color: #f5f6fa; border: 1px solid #485460; border-radius: 5px; padding: 6px;")
+
+        form.addWidget(self.lbl_user, 0, 0)
+        form.addWidget(QLabel("Role:"), 1, 0)
+        form.addWidget(self.role_combo, 1, 1)
+        form.addWidget(QLabel("Branch:"), 2, 0)
+        form.addWidget(self.branch_code, 2, 1)
+        self.content_layout.addLayout(form)
+
+        buttons = QHBoxLayout()
+        self.btn_refresh = create_button("🔄 Refresh", "#34495e", "white", self.load_users)
+        self.btn_save = create_button("✅ រក្សាទុក Role", COLOR_SUCCESS_GREEN, "white", self.save_role)
+        self.btn_close = create_button("បិទ", "#7f8c8d", "white", self.accept)
+        for btn in (self.btn_refresh, self.btn_save, self.btn_close):
+            btn.setMinimumHeight(38)
+        buttons.addWidget(self.btn_refresh)
+        buttons.addStretch()
+        buttons.addWidget(self.btn_save)
+        buttons.addWidget(self.btn_close)
+        self.content_layout.addLayout(buttons)
+
+        self.load_users()
+
+    def _force_branch_code_uppercase(self, text):
+        upper_text = str(text or "").upper()
+        if text == upper_text:
+            return
+        cursor_pos = self.branch_code.cursorPosition()
+        self.branch_code.blockSignals(True)
+        self.branch_code.setText(upper_text)
+        self.branch_code.setCursorPosition(cursor_pos)
+        self.branch_code.blockSignals(False)
+
+    def _on_role_changed(self):
+        role = self.role_combo.currentData()
+        if role == "admin":
+            self.branch_code.setText("ALL")
+            self.branch_code.setEnabled(False)
+        else:
+            self.branch_code.setEnabled(True)
+            if self.branch_code.text().strip().upper() == "ALL":
+                self.branch_code.setText("MAIN")
+
+    def load_users(self):
+        rows = db.get_all_users()
+        self.user_table.setRowCount(len(rows))
+        for row_idx, row in enumerate(rows):
+            role = str(row["role"] or "user").lower()
+            branch = db.normalize_branch_code(row["branch_code"] or ("ALL" if role == "admin" else "MAIN"))
+            cloud_access = "Yes" if role in ("admin", "manager", "branch_manager", "cloud_manager") or str(row["username"]).lower() == "admin" else "No"
+            values = [row["username"], role, branch, cloud_access]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(str(value or ""))
+                if cloud_access == "Yes":
+                    item.setBackground(QColor("#173d2b"))
+                self.user_table.setItem(row_idx, col_idx, item)
+        self.user_table.resizeColumnsToContents()
+
+    def _load_selected_user(self):
+        items = self.user_table.selectedItems()
+        if not items:
+            return
+        row = items[0].row()
+        self.selected_username = self.user_table.item(row, 0).text()
+        role = self.user_table.item(row, 1).text().strip().lower()
+        branch = self.user_table.item(row, 2).text().strip().upper()
+        self.lbl_user.setText(f"User: {self.selected_username}")
+        role_index = self.role_combo.findData(role)
+        self.role_combo.setCurrentIndex(role_index if role_index >= 0 else 0)
+        self.branch_code.setText(branch or "MAIN")
+        self._on_role_changed()
+
+    def save_role(self):
+        if not self.selected_username:
+            show_warning(self, "សូមជ្រើសរើស User ជាមុនសិន។")
+            return
+        role = self.role_combo.currentData()
+        branch = self.branch_code.text().strip().upper()
+        if role != "admin" and not branch:
+            show_warning(self, "សូមបញ្ចូល Branch Code។")
+            return
+        reply = QMessageBox.question(
+            self,
+            "បញ្ជាក់",
+            f"ប្ដូរ User '{self.selected_username}' ទៅ role '{role}' មែនទេ?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        try:
+            db.update_user_role(self.selected_username, role, branch)
+            show_success(self, "បានរក្សាទុកសិទ្ធិ User រួចហើយ។")
+            self.load_users()
+        except Exception as e:
+            show_error(self, f"មិនអាចរក្សាទុកបានទេ: {e}")
 
 
 class SignUpDialog(BaseDialog):
@@ -1727,65 +1852,59 @@ class CloudSyncHelpDialog(BaseDialog):
         # ===== Option 1: Google Drive =====
         content_layout.addWidget(self._create_option_card(
             icon="📁",
-            title="ជម្រើសទី ១: Google Drive (ងាយស្រួលបំផុត)",
+            title="Option 1: Private Storage API",
             steps=[
-                "១. បើក Google Drive (drive.google.com)",
-                "២. Upload file clinic.db ចូលទៅក្នុង Google Drive",
-                "៣. ចុចស្តាំលើ file → ចែករំលែក (Share) → កំណត់ជា 'Anyone with the link'",
-                "៤. Copy Link ដែលបាន",
-                "៥. ប្តូរ URL ពី:",
-                "   https://drive.google.com/file/d/FILE_ID/view?usp=sharing",
-                "   ទៅជា:",
-                "   https://drive.google.com/uc?export=download&id=FILE_ID",
+                "1. Use private storage that requires authentication",
+                "2. Upload only encrypted .db.enc packages",
+                "3. Do not enable 'Anyone with the link'",
+                "4. Scope access to trusted clinic users/devices only",
+                "5. Rotate credentials when staff or devices change",
             ],
-            example="ឧទាហរណ៍ URL:\nhttps://drive.google.com/uc?export=download&id=1ABC123xyz",
+            example="Use an authenticated private API or the GitHub private repo flow below.",
             color="#4285f4"
         ))
 
         # ===== Option 2: GitHub =====
         content_layout.addWidget(self._create_option_card(
             icon="🐙",
-            title="ជម្រើសទី ២: GitHub (ឥតគិតថ្លៃ)",
+            title="Option 2: GitHub Private Repository",
             steps=[
-                "១. បង្កើត GitHub Account (github.com)",
-                "២. បង្កើត Repository ថ្មី (ឧ. clinic-data)",
-                "៣. Upload file clinic.db ចូលទៅក្នុង Repository",
-                "៤. ចុចលើ file → ចុច 'Raw' button",
-                "៥. Copy URL ពី browser address bar",
+                "1. Create a private Cloud Sync repository",
+                "2. Set a GitHub token in this app",
+                "3. Scope the token only to the Cloud Sync repository",
+                "4. Download-only users need Contents: Read",
+                "5. Upload/edit/delete users need Contents: Read and write",
             ],
-            example="ឧទាហរណ៍ URL:\nhttps://raw.githubusercontent.com/USERNAME/REPO/main/clinic.db",
+            example="Repository URL:\nhttps://github.com/USERNAME/clinic-cloud-sync.git",
             color="#6e40c9"
         ))
 
         # ===== Option 3: Dropbox =====
         content_layout.addWidget(self._create_option_card(
             icon="📦",
-            title="ជម្រើសទី ៣: Dropbox (ងាយស្រួល)",
+            title="Option 3: Dropbox/Drive Private API Only",
             steps=[
-                "១. បើក Dropbox (dropbox.com)",
-                "២. Upload file clinic.db",
-                "៣. ចុច 'Share' → 'Create link'",
-                "៤. Copy Link",
-                "៥. ប្តូរ URL ពី:",
-                "   https://www.dropbox.com/s/FILE_ID/clinic.db?dl=0",
-                "   ទៅជា:",
-                "   https://dl.dropboxusercontent.com/s/FILE_ID/clinic.db",
+                "1. Use business/private storage with account authentication",
+                "2. Upload only encrypted .db.enc packages",
+                "3. Do not create public share links",
+                "4. Restrict access to the clinic team",
+                "5. Audit and revoke old device access regularly",
             ],
-            example="ឧទាហរណ៍ URL:\nhttps://dl.dropboxusercontent.com/s/abc123/clinic.db",
+            example="Public Dropbox/Drive direct links are not recommended for patient data.",
             color="#0061ff"
         ))
 
         # ===== Option 4: Local Network =====
         content_layout.addWidget(self._create_option_card(
             icon="🏠",
-            title="ជម្រើសទី ៤: Local Network (LAN)",
+            title="Option 4: Local Network with ACL",
             steps=[
-                "១. ដាក់ file clinic.db ក្នុង Shared Folder",
-                "២. ចុចស្តាំលើ folder → Properties → Sharing → Share",
-                "៣. Copy Network Path",
-                "៤. ប្រើ URL ជាទម្រង់: file://COMPUTER_NAME/shared/clinic.db",
+                "1. Share only encrypted .db.enc packages",
+                "2. Use Windows file ACLs for named clinic users only",
+                "3. Grant read-only access unless write access is required",
+                "4. Do not place raw clinic.db in a public shared folder",
             ],
-            example="ឧទាហរណ៍ URL:\nfile://DESKTOP-ABC123/Users/Public/clinic.db",
+            example="Minimum fallback: private share + Windows ACL + encrypted .db.enc file.",
             color="#20bf6b"
         ))
 
@@ -1795,7 +1914,8 @@ class CloudSyncHelpDialog(BaseDialog):
             title="ចំណាំសំខាន់ៗ",
             steps=[
                 "✓ URL ត្រូវចាប់ផ្តើមដោយ http:// ឬ https:// (ឬ file:// សម្រាប់ LAN)",
-                "✓ File ត្រូវតែជា SQLite database (.db) ត្រឹមត្រូវ",
+                "✓ Cloud Sync files should be encrypted packages (.db.enc)",
+                "✓ Use private storage/API with authentication; do not publish patient DB raw URLs",
                 "✓ ទិន្នន័យនឹងត្រូវបាន Backup មុនពេល Sync គ្រប់ពេល",
                 "✓ អ្នកអាចជ្រើសរើស 'Replace' (ជំនួស) ឬ 'Merge' (បញ្ចូលគ្នា)",
                 "✗ កុំប្រើ URL ពីប្រភពដែលមិនទុកចិត្ត (អាចមាន malware)",
@@ -1825,7 +1945,7 @@ class CloudSyncHelpDialog(BaseDialog):
             }
         """)
         btn_copy_example.clicked.connect(lambda: copy_to_clipboard(
-            "https://raw.githubusercontent.com/USERNAME/REPO/main/clinic.db"
+            "https://github.com/USERNAME/clinic-cloud-sync.git"
         ))
 
         btn_close = QPushButton("✅ យល់ហើយ")
@@ -2243,6 +2363,9 @@ class LoginDialog(BaseDialog):
 
     def upload_to_cloud(self):
         """ផ្ញើទិន្នន័យទៅ Cloud (GitHub)"""
+        if not self._require_cloud_write_access():
+            return
+
         # ពិនិត្យថា Git ដំឡើងហើយឬនៅ
         if not self._check_git_installed():
             QMessageBox.critical(
@@ -2284,6 +2407,9 @@ class LoginDialog(BaseDialog):
 
     def edit_uploaded_cloud_data(self):
         """Download an uploaded Cloud database, edit rows, then upload it back."""
+        if not self._require_cloud_write_access():
+            return
+
         if not self._check_git_installed():
             QMessageBox.critical(
                 self,
@@ -2335,8 +2461,9 @@ class LoginDialog(BaseDialog):
             cloud_url = cloud_url.strip()
             parsed_path = urllib.parse.urlparse(cloud_url).path
             upload_file_name = os.path.basename(parsed_path) or "clinic_full.db"
-            if not upload_file_name.lower().endswith(".db"):
-                upload_file_name = "clinic_full.db"
+            if not self._is_cloud_database_file_name(upload_file_name):
+                upload_file_name = "clinic_full.db.enc"
+            upload_file_name = self._cloud_package_filename(upload_file_name)
 
         if not cloud_url:
             QMessageBox.warning(
@@ -2347,7 +2474,7 @@ class LoginDialog(BaseDialog):
             )
             return
 
-        ok_url, url_error = self._preflight_cloud_sync_url(cloud_url)
+        ok_url, url_error = (True, "") if download_file_name else self._preflight_cloud_sync_url(cloud_url)
         if not ok_url:
             saved_url = self.config.get('CATEGORIES', 'cloud_sync_url', fallback="").strip()
             if download_file_name and saved_url and saved_url != cloud_url:
@@ -2388,14 +2515,25 @@ class LoginDialog(BaseDialog):
             temp_root = os.path.join(tempfile.gettempdir(), "ClinicManager")
             os.makedirs(temp_root, exist_ok=True)
             download_temp_dir = tempfile.mkdtemp(prefix="cloud_edit_download_", dir=temp_root)
-            downloaded_db = os.path.join(download_temp_dir, upload_file_name)
+            downloaded_file = os.path.join(download_temp_dir, upload_file_name)
 
             progress.setValue(15)
-            urllib.request.urlretrieve(cloud_url, downloaded_db)
+            if download_file_name:
+                self._copy_file_from_cloud_git_repo(
+                    repo_url,
+                    upload_file_name,
+                    downloaded_file,
+                    temp_root,
+                    "cloud_edit_fetch_",
+                )
+            else:
+                self._download_cloud_url(cloud_url, downloaded_file)
 
             progress.setValue(30)
             progress.setLabelText("កំពុងពិនិត្យ database...")
             QApplication.processEvents()
+
+            downloaded_db, was_encrypted = self._prepare_downloaded_cloud_database(downloaded_file, download_temp_dir)
 
             if not self._validate_sqlite_file(downloaded_db):
                 progress.close()
@@ -2455,12 +2593,24 @@ class LoginDialog(BaseDialog):
             progress.setLabelText("កំពុងភ្ជាប់ទៅ Cloud repository...")
             QApplication.processEvents()
             temp_git_dir = self._create_cloud_git_workspace(repo_url, temp_root, "temp_github_cloud_edit_")
+            upload_file_name = self._cloud_package_filename(upload_file_name)
+            edited_db_plain = os.path.join(download_temp_dir, self._cloud_plain_db_filename(upload_file_name))
             edited_db = os.path.join(temp_git_dir, upload_file_name)
 
             progress.setValue(20)
             progress.setLabelText("កំពុងបង្កើត database ថ្មី...")
             QApplication.processEvents()
-            build_patient_share_database(edited_db, edited_rows)
+            build_patient_share_database(edited_db_plain, edited_rows)
+            passphrase = self._get_cloud_encryption_passphrase(prompt=True)
+            if not passphrase:
+                progress.close()
+                QMessageBox.warning(
+                    self,
+                    "Cloud Sync Encryption",
+                    "Cloud Sync encryption passphrase is required before uploading."
+                )
+                return
+            self._encrypt_cloud_database(edited_db_plain, edited_db, passphrase)
 
             metadata = {
                 "version": APP_VERSION,
@@ -2470,7 +2620,10 @@ class LoginDialog(BaseDialog):
                 "patient_count": len(edited_rows),
                 "edited_cloud_file": upload_file_name,
                 "cloud_backup": cloud_backup_path,
-                "note": "Cloud data edited from uploaded database"
+                "note": "Cloud data edited from uploaded database",
+                "encrypted": True,
+                "encryption": "Fernet with PBKDF2HMAC-SHA256",
+                "access_policy": "Private repository or authenticated API token required; GitHub token should be scoped to this repo only"
             }
             with open(os.path.join(temp_git_dir, "report_metadata.json"), "w", encoding="utf-8") as f:
                 json.dump(metadata, f, indent=2, ensure_ascii=False)
@@ -2557,6 +2710,9 @@ class LoginDialog(BaseDialog):
 
     def delete_uploaded_cloud_data(self):
         """Delete an uploaded Cloud database file from the configured GitHub repo."""
+        if not self._require_cloud_write_access():
+            return
+
         if not self._check_git_installed():
             QMessageBox.critical(
                 self,
@@ -2607,7 +2763,7 @@ class LoginDialog(BaseDialog):
             period_label = "URL ដែលបានបញ្ចូល"
 
         delete_file_name = str(delete_file_name or "").strip().replace("\\", "/")
-        if not delete_file_name or "/" in delete_file_name or not delete_file_name.lower().endswith(".db"):
+        if not delete_file_name or "/" in delete_file_name or not self._is_cloud_database_file_name(delete_file_name):
             QMessageBox.warning(
                 self,
                 "⚠️ File មិនត្រឹមត្រូវ",
@@ -2616,8 +2772,9 @@ class LoginDialog(BaseDialog):
             )
             return
 
+        delete_file_name = self._cloud_package_filename(delete_file_name)
         cloud_url = self._github_repo_file_raw_url(repo_url, delete_file_name)
-        ok_url, url_error = self._preflight_cloud_sync_url(cloud_url) if cloud_url else (False, "មិនអាចបង្កើត Cloud URL បានទេ។")
+        ok_url, url_error = (True, "") if cloud_url else (False, "មិនអាចបង្កើត Cloud URL បានទេ។")
         if not ok_url:
             QMessageBox.warning(
                 self,
@@ -2749,12 +2906,23 @@ class LoginDialog(BaseDialog):
     def show_telegram_bot_setup(self):
         """បង្ហាញ Dialog សម្រាប់កំណត់ Telegram Bot"""
         dialog = TelegramBotSetupDialog(self)
+        dialog.txt_bot.setText(self._get_telegram_bot_token())
+        dialog.txt_chat.setText(self.config.get('CATEGORIES', 'telegram_chat_id', fallback="").strip())
         if dialog.exec_() == QDialog.Accepted:
             bot_token = dialog.txt_bot.text().strip()
             chat_id = dialog.txt_chat.text().strip()
 
             if bot_token and chat_id:
-                self.config.set('CATEGORIES', 'telegram_bot_token', bot_token)
+                saved, error = self._set_secret_in_keyring(self._telegram_bot_token_key(), bot_token)
+                if not saved:
+                    QMessageBox.critical(
+                        self,
+                        "Credential Storage Error",
+                        "Could not save Telegram bot token to Windows Credential Manager/keyring.\n\n"
+                        f"{error}"
+                    )
+                    return
+                self._remove_plaintext_setting('telegram_bot_token')
                 self.config.set('CATEGORIES', 'telegram_chat_id', chat_id)
                 with open(self.settings_file, 'w', encoding='utf-8') as f:
                     self.config.write(f)
@@ -2777,6 +2945,31 @@ class LoginDialog(BaseDialog):
         with open(self.settings_file, 'w', encoding='utf-8') as f:
             self.config.write(f)
 
+    def _can_manage_cloud_writes(self):
+        context = self.user_context or {}
+        role = str(context.get("role") or "").strip().lower()
+        username = str(self.current_user or "").strip().lower()
+        return bool(
+            context.get("is_admin")
+            or context.get("can_manage_cloud")
+            or username == "admin"
+            or role in ("admin", "manager", "branch_manager", "cloud_manager")
+        )
+
+    def _deny_cloud_write_access(self):
+        QMessageBox.warning(
+            self,
+            "🔒 មិនមានសិទ្ធិ",
+            "មុខងារ Upload / កែ / លុប Cloud អនុញ្ញាតតែ Admin ឬ Manager ប៉ុណ្ណោះ។\n\n"
+            "User ធម្មតាអាចប្រើតែ ទាញពី Cloud និង ជំនួយ Cloud។"
+        )
+
+    def _require_cloud_write_access(self):
+        if self._can_manage_cloud_writes():
+            return True
+        self._deny_cloud_write_access()
+        return False
+
     def _cloud_token_username(self):
         username = (self.current_user or "").strip() or "login_screen"
         return re.sub(r"[^A-Za-z0-9_-]", "_", username)
@@ -2784,26 +2977,234 @@ class LoginDialog(BaseDialog):
     def _cloud_token_key(self):
         return f"cloud_github_token_{self._cloud_token_username()}"
 
+    def _telegram_bot_token_key(self):
+        return "telegram_bot_token"
+
+    def _secret_storage_key(self, key_name):
+        return f"{APP_NAME}:{key_name}"
+
+    def _get_secret_from_keyring(self, key_name):
+        try:
+            import keyring
+            return keyring.get_password(SECRET_STORAGE_SERVICE, self._secret_storage_key(key_name)) or ""
+        except Exception as e:
+            db.logger.warning(f"Credential storage read failed for {key_name}: {e}")
+            return ""
+
+    def _set_secret_in_keyring(self, key_name, secret):
+        try:
+            import keyring
+            storage_key = self._secret_storage_key(key_name)
+            if secret:
+                keyring.set_password(SECRET_STORAGE_SERVICE, storage_key, secret)
+            else:
+                try:
+                    keyring.delete_password(SECRET_STORAGE_SERVICE, storage_key)
+                except Exception:
+                    pass
+            return True, ""
+        except Exception as e:
+            db.logger.error(f"Credential storage write failed for {key_name}: {e}")
+            return False, str(e)
+
+    def _remove_plaintext_setting(self, *keys):
+        changed = False
+        self._ensure_settings_categories()
+        for key in keys:
+            if self.config.has_option('CATEGORIES', key):
+                self.config.remove_option('CATEGORIES', key)
+                changed = True
+        if changed:
+            self._save_settings()
+
+    def _get_telegram_bot_token(self):
+        token_key = self._telegram_bot_token_key()
+        token = self._get_secret_from_keyring(token_key)
+        if token:
+            return token
+        legacy_token = self.config.get('CATEGORIES', 'telegram_bot_token', fallback="").strip()
+        if legacy_token:
+            saved, error = self._set_secret_in_keyring(token_key, legacy_token)
+            if saved:
+                self._remove_plaintext_setting('telegram_bot_token')
+                return legacy_token
+            db.logger.error(f"Could not migrate Telegram bot token to credential storage: {error}")
+        return ""
+
     def _get_cloud_github_token(self):
         self._ensure_settings_categories()
-        token = self.config.get('CATEGORIES', self._cloud_token_key(), fallback="").strip()
+        token_key = self._cloud_token_key()
+        token = self._get_secret_from_keyring(token_key)
         if token:
             return token
 
+        plaintext_token = self.config.get('CATEGORIES', token_key, fallback="").strip()
         legacy_token = self.config.get('CATEGORIES', 'cloud_github_token', fallback="").strip()
-        if legacy_token and (self.current_user or "").strip():
-            self.config.set('CATEGORIES', self._cloud_token_key(), legacy_token)
-            self.config.remove_option('CATEGORIES', 'cloud_github_token')
-            self._save_settings()
-            return legacy_token
+        token_to_migrate = plaintext_token or legacy_token
+        if token_to_migrate and (self.current_user or "").strip():
+            saved, error = self._set_secret_in_keyring(token_key, token_to_migrate)
+            if saved:
+                self._remove_plaintext_setting(token_key, 'cloud_github_token')
+                return token_to_migrate
+            db.logger.error(f"Could not migrate GitHub token to credential storage: {error}")
         return ""
 
     def _set_cloud_github_token(self, token):
-        self._ensure_settings_categories()
-        self.config.set('CATEGORIES', self._cloud_token_key(), token)
-        if self.config.has_option('CATEGORIES', 'cloud_github_token'):
-            self.config.remove_option('CATEGORIES', 'cloud_github_token')
-        self._save_settings()
+        token_key = self._cloud_token_key()
+        saved, error = self._set_secret_in_keyring(token_key, token)
+        self._remove_plaintext_setting(token_key, 'cloud_github_token')
+        if not saved:
+            raise RuntimeError(
+                "Could not save GitHub token to Windows Credential Manager/keyring.\n\n"
+                f"{error}"
+            )
+
+    def _cloud_encryption_passphrase_key(self):
+        return f"cloud_db_encryption_passphrase_{self._cloud_token_username()}"
+
+    def _get_cloud_encryption_passphrase(self, prompt=True):
+        passphrase_key = self._cloud_encryption_passphrase_key()
+        passphrase = self._get_secret_from_keyring(passphrase_key)
+        if passphrase or not prompt:
+            return passphrase
+
+        dialog = QInputDialog(self)
+        dialog.setInputMode(QInputDialog.TextInput)
+        dialog.setTextEchoMode(QLineEdit.Password)
+        dialog.setWindowTitle("Cloud Sync Encryption")
+        dialog.setLabelText(
+            "Enter the shared Cloud Sync encryption passphrase.\n\n"
+            "This passphrase encrypts the database before upload and is stored on this PC "
+            "in Windows Credential Manager/keyring. Use the same passphrase on every PC "
+            "that needs to read this private Cloud Sync data."
+        )
+        dialog.setOkButtonText("Continue")
+        dialog.setCancelButtonText("Cancel")
+        dialog.resize(620, 220)
+        self._style_url_input_dialog(dialog)
+        if dialog.exec_() != QDialog.Accepted:
+            return ""
+
+        passphrase = dialog.textValue().strip()
+        if not passphrase:
+            return ""
+        saved, error = self._set_secret_in_keyring(passphrase_key, passphrase)
+        if not saved:
+            raise RuntimeError(
+                "Could not save Cloud Sync encryption passphrase to Windows Credential Manager/keyring.\n\n"
+                f"{error}"
+            )
+        return passphrase
+
+    def _derive_cloud_encryption_key(self, passphrase, salt):
+        try:
+            from cryptography.hazmat.primitives import hashes
+            from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        except Exception as e:
+            raise RuntimeError(
+                "Cloud Sync encryption requires the 'cryptography' package. "
+                "Install requirements.txt before using Cloud Sync."
+            ) from e
+
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=CLOUD_DB_KDF_ITERATIONS,
+        )
+        return base64.urlsafe_b64encode(kdf.derive(passphrase.encode("utf-8")))
+
+    def _cloud_package_filename(self, db_filename):
+        file_name = str(db_filename or "").strip().replace("\\", "/")
+        if file_name.lower().endswith(".db.enc"):
+            return file_name
+        if file_name.lower().endswith(".db"):
+            return f"{file_name}.enc"
+        return "clinic_full.db.enc"
+
+    def _cloud_plain_db_filename(self, package_filename):
+        file_name = str(package_filename or "").strip().replace("\\", "/")
+        if file_name.lower().endswith(".db.enc"):
+            return file_name[:-4]
+        if file_name.lower().endswith(".db"):
+            return file_name
+        return "clinic_full.db"
+
+    def _is_cloud_database_file_name(self, file_name):
+        lower_name = str(file_name or "").lower()
+        return lower_name.endswith(".db") or lower_name.endswith(".db.enc")
+
+    def _encrypt_cloud_database(self, source_db, encrypted_path, passphrase):
+        try:
+            from cryptography.fernet import Fernet
+        except Exception as e:
+            raise RuntimeError(
+                "Cloud Sync encryption requires the 'cryptography' package. "
+                "Install requirements.txt before using Cloud Sync."
+            ) from e
+
+        salt = os.urandom(CLOUD_DB_SALT_BYTES)
+        key = self._derive_cloud_encryption_key(passphrase, salt)
+        with open(source_db, "rb") as f:
+            plaintext = f.read()
+        payload = {
+            "format": CLOUD_DB_PACKAGE_FORMAT,
+            "version": CLOUD_DB_PACKAGE_VERSION,
+            "algorithm": "Fernet",
+            "kdf": "PBKDF2HMAC-SHA256",
+            "iterations": CLOUD_DB_KDF_ITERATIONS,
+            "salt": base64.b64encode(salt).decode("ascii"),
+            "payload": Fernet(key).encrypt(plaintext).decode("ascii"),
+        }
+        with open(encrypted_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+
+    def _is_encrypted_cloud_database(self, file_path):
+        try:
+            with open(file_path, "rb") as f:
+                sample = f.read(256).lstrip()
+            if sample.startswith(b"SQLite format 3\x00"):
+                return False
+            data = json.loads(sample.decode("utf-8", errors="ignore") + "")
+            return data.get("format") == CLOUD_DB_PACKAGE_FORMAT
+        except Exception:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return data.get("format") == CLOUD_DB_PACKAGE_FORMAT
+            except Exception:
+                return False
+
+    def _decrypt_cloud_database(self, encrypted_path, target_db, passphrase):
+        try:
+            from cryptography.fernet import Fernet, InvalidToken
+        except Exception as e:
+            raise RuntimeError(
+                "Cloud Sync decryption requires the 'cryptography' package. "
+                "Install requirements.txt before using Cloud Sync."
+            ) from e
+
+        with open(encrypted_path, "r", encoding="utf-8") as f:
+            package = json.load(f)
+        if package.get("format") != CLOUD_DB_PACKAGE_FORMAT:
+            raise ValueError("Cloud package format is not recognized.")
+        if package.get("version") != CLOUD_DB_PACKAGE_VERSION:
+            raise ValueError("Cloud package version is not supported.")
+        if package.get("kdf") != "PBKDF2HMAC-SHA256" or package.get("algorithm") != "Fernet":
+            raise ValueError("Cloud package encryption algorithm is not supported.")
+        try:
+            salt = base64.b64decode(package["salt"], validate=True)
+            payload = package["payload"].encode("ascii")
+        except (KeyError, binascii.Error, UnicodeEncodeError) as e:
+            raise ValueError("Cloud package is missing encryption metadata.") from e
+
+        key = self._derive_cloud_encryption_key(passphrase, salt)
+        try:
+            plaintext = Fernet(key).decrypt(payload)
+        except InvalidToken as e:
+            raise ValueError("Cloud package could not be decrypted. Check the encryption passphrase.") from e
+        with open(target_db, "wb") as f:
+            f.write(plaintext)
 
     def _ensure_cloud_token_for_write(self):
         token = self._get_cloud_github_token()
@@ -2825,8 +3226,63 @@ class LoginDialog(BaseDialog):
         self.show_github_token_setup()
         return bool(self._get_cloud_github_token())
 
+    def _ensure_cloud_token_for_read(self):
+        token = self._get_cloud_github_token()
+        if token:
+            return True
+
+        reply = QMessageBox.question(
+            self,
+            "GitHub Token Required",
+            "Private Cloud Sync repository requires a GitHub token.\n\n"
+            "For role sync or download-only use, create a fine-grained token scoped only "
+            "to the Cloud Sync repository with Contents: Read.\n\n"
+            "Set token now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return False
+        self.show_github_read_token_setup()
+        return bool(self._get_cloud_github_token())
+
+    def show_github_read_token_setup(self):
+        """Save a read-only GitHub token for private Cloud Sync reads."""
+        self._ensure_settings_categories()
+        current_token = self._get_cloud_github_token()
+        username = self.current_user or "login-screen"
+        dialog = QInputDialog(self)
+        dialog.setInputMode(QInputDialog.TextInput)
+        dialog.setTextEchoMode(QLineEdit.Password)
+        dialog.setWindowTitle("GitHub Token")
+        dialog.setLabelText(
+            f"Enter GitHub Personal Access Token for User: {username}\n\n"
+            "Use a fine-grained token scoped only to the Cloud Sync repository.\n"
+            "Minimum for role sync/download: Contents = Read.\n"
+            "Leave blank and press OK to remove the saved token.\n"
+            "Token is stored in Windows Credential Manager/keyring."
+        )
+        dialog.setTextValue(current_token)
+        dialog.setOkButtonText("Save")
+        dialog.setCancelButtonText("Cancel")
+        dialog.resize(620, 220)
+        self._style_url_input_dialog(dialog)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        token = dialog.textValue().strip()
+        try:
+            self._set_cloud_github_token(token)
+        except RuntimeError as e:
+            QMessageBox.critical(self, "Credential Storage Error", str(e))
+            return
+        QMessageBox.information(self, "GitHub Token", "GitHub token setting was saved.")
+
     def show_github_token_setup(self):
         """Save a GitHub token for Cloud Sync edit/delete on this computer."""
+        if not self._require_cloud_write_access():
+            return
+
         self._ensure_settings_categories()
         current_token = self._get_cloud_github_token()
         username = self.current_user or "login-screen"
@@ -2836,10 +3292,11 @@ class LoginDialog(BaseDialog):
         dialog.setWindowTitle("🔑 កំណត់ GitHub Token")
         dialog.setLabelText(
             f"បញ្ចូល GitHub Personal Access Token សម្រាប់ User: {username}\n\n"
-            "• Token ត្រូវមានសិទ្ធិ write ទៅ repository Cloud Sync\n"
+            "• ប្រើ fine-grained token សម្រាប់តែ repository Cloud Sync\n"
+            "• Scope អប្បបរមា: Contents = Read and write\n"
             "• User ផ្សេងត្រូវបញ្ចូល token ដោយឡែក\n"
             "• ទុកឲ្យទទេ រួចចុច OK ដើម្បីលុប token ចាស់\n"
-            "• Token នឹងរក្សាទុកតែលើ PC នេះប៉ុណ្ណោះ"
+            "• Token នឹងរក្សាទុកក្នុង Windows Credential Manager/keyring"
         )
         dialog.setTextValue(current_token)
         dialog.setOkButtonText("រក្សាទុក")
@@ -2851,7 +3308,11 @@ class LoginDialog(BaseDialog):
             return
 
         token = dialog.textValue().strip()
-        self._set_cloud_github_token(token)
+        try:
+            self._set_cloud_github_token(token)
+        except RuntimeError as e:
+            QMessageBox.critical(self, "Credential Storage Error", str(e))
+            return
         if token:
             QMessageBox.information(
                 self,
@@ -2957,6 +3418,58 @@ class LoginDialog(BaseDialog):
                 raise RuntimeError(output or "Git workspace setup failed.")
         return temp_git_dir
 
+    def _copy_file_from_cloud_git_repo(self, repo_url, file_name, target_path, temp_root, prefix):
+        file_name = str(file_name or "").strip().replace("\\", "/")
+        if not file_name or os.path.isabs(file_name) or ".." in file_name.split("/"):
+            raise ValueError("Cloud file name is not valid.")
+        temp_git_dir = self._create_cloud_git_workspace(repo_url, temp_root, prefix)
+        try:
+            repo_root = os.path.abspath(temp_git_dir)
+            source_path = os.path.abspath(os.path.join(repo_root, file_name))
+            if os.path.commonpath([repo_root, source_path]) != repo_root:
+                raise ValueError("Cloud file path is outside the repository.")
+            if not os.path.exists(source_path):
+                raise FileNotFoundError(file_name)
+            shutil.copy2(source_path, target_path)
+        finally:
+            shutil.rmtree(temp_git_dir, ignore_errors=True)
+
+    def _cloud_url_headers(self, url):
+        headers = {"User-Agent": f"ClinicManager/{APP_VERSION}"}
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.netloc.lower()
+        if host in {"github.com", "raw.githubusercontent.com"} or host.endswith(".githubusercontent.com"):
+            token = self._get_cloud_github_token()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+    def _download_cloud_url(self, url, target_path, reporthook=None):
+        request = urllib.request.Request(url, headers=self._cloud_url_headers(url))
+        with urllib.request.urlopen(request, timeout=30) as response, open(target_path, "wb") as out:
+            total_size = int(response.headers.get("Content-Length") or 0)
+            downloaded = 0
+            block_num = 0
+            while True:
+                chunk = response.read(1024 * 64)
+                if not chunk:
+                    break
+                out.write(chunk)
+                downloaded += len(chunk)
+                block_num += 1
+                if reporthook:
+                    reporthook(block_num, 1024 * 64, total_size or downloaded)
+
+    def _prepare_downloaded_cloud_database(self, downloaded_file, temp_dir, passphrase=None):
+        if self._is_encrypted_cloud_database(downloaded_file):
+            passphrase = passphrase or self._get_cloud_encryption_passphrase(prompt=True)
+            if not passphrase:
+                raise RuntimeError("Cloud Sync encryption passphrase is required.")
+            plain_db = os.path.join(temp_dir, "cloud_sync_decrypted.db")
+            self._decrypt_cloud_database(downloaded_file, plain_db, passphrase)
+            return plain_db, True
+        return downloaded_file, False
+
     def _publish_cloud_git_workspace(self, temp_git_dir, commit_message, progress, start_value=60, span=40):
         commands = [
             ("Setting git user name...", ['git', 'config', 'user.name', 'NOU SARAT']),
@@ -2990,6 +3503,246 @@ class LoginDialog(BaseDialog):
                     continue
                 return False, msg, output
         return True, "", ""
+
+    def _get_role_policy_public_key_pem(self):
+        candidate_paths = [
+            get_config_path(ROLE_POLICY_PUBLIC_KEY_FILE),
+            resource_path(ROLE_POLICY_PUBLIC_KEY_FILE),
+            os.path.join(self.base_dir, ROLE_POLICY_PUBLIC_KEY_FILE),
+        ]
+        for path in candidate_paths:
+            if path and os.path.exists(path):
+                with open(path, "rb") as f:
+                    return f.read()
+        raise FileNotFoundError(
+            f"Role policy public key is missing. Add {ROLE_POLICY_PUBLIC_KEY_FILE} "
+            "beside the app or in ClinicManager AppData."
+        )
+
+    def _canonical_role_policy_bytes(self, policy):
+        payload = dict(policy or {})
+        payload.pop(ROLE_POLICY_SIGNATURE_FIELD, None)
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+    def _sign_role_policy(self, policy, private_key_path):
+        try:
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        except Exception as e:
+            raise RuntimeError(
+                "Role policy signing requires the 'cryptography' package. Install requirements.txt first."
+            ) from e
+
+        with open(private_key_path, "rb") as f:
+            private_key = serialization.load_pem_private_key(f.read(), password=None)
+        if not isinstance(private_key, Ed25519PrivateKey):
+            raise ValueError("Role policy private key must be an Ed25519 private key.")
+        signature = private_key.sign(self._canonical_role_policy_bytes(policy))
+        signed_policy = dict(policy)
+        signed_policy[ROLE_POLICY_SIGNATURE_FIELD] = base64.b64encode(signature).decode("ascii")
+        return signed_policy
+
+    def _verify_role_policy_signature(self, policy):
+        try:
+            from cryptography.exceptions import InvalidSignature
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        except Exception as e:
+            raise RuntimeError(
+                "Role policy verification requires the 'cryptography' package. Install requirements.txt first."
+            ) from e
+
+        signature_text = str((policy or {}).get(ROLE_POLICY_SIGNATURE_FIELD) or "").strip()
+        if not signature_text:
+            raise ValueError("Role policy is not signed.")
+        public_key = serialization.load_pem_public_key(self._get_role_policy_public_key_pem())
+        if not isinstance(public_key, Ed25519PublicKey):
+            raise ValueError("Role policy public key must be an Ed25519 public key.")
+        try:
+            public_key.verify(base64.b64decode(signature_text), self._canonical_role_policy_bytes(policy))
+        except (InvalidSignature, binascii.Error) as e:
+            raise ValueError("Role policy signature is invalid.") from e
+
+    def _build_role_policy(self):
+        users = []
+        for row in db.get_all_users():
+            username = str(row["username"] or "").strip()
+            if not username:
+                continue
+            role = str(row["role"] or "user").strip().lower()
+            branch = db.normalize_branch_code(row["branch_code"] or ("ALL" if role == "admin" else "MAIN"))
+            users.append({
+                "username": username,
+                "role": role,
+                "branch_code": "ALL" if role == "admin" else branch,
+            })
+        return {
+            "format": "ClinicManagerRolePolicy",
+            "version": 1,
+            "signature_algorithm": ROLE_POLICY_SIGNATURE_ALGORITHM,
+            "issued_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+            "issued_by": self.current_user or "admin",
+            "app_version": APP_VERSION,
+            "users": users,
+        }
+
+    def _validated_role_policy_entries(self, policy):
+        if policy.get("format") != "ClinicManagerRolePolicy":
+            raise ValueError("Role policy format is not recognized.")
+        if policy.get("version") != 1:
+            raise ValueError("Role policy version is not supported.")
+        entries = policy.get("users")
+        if not isinstance(entries, list):
+            raise ValueError("Role policy users must be a list.")
+
+        valid_roles = {"admin", "manager", "branch_manager", "cloud_manager", "user"}
+        seen = set()
+        validated = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            username = str(item.get("username") or "").strip()
+            role = str(item.get("role") or "user").strip().lower()
+            if not username or username.lower() in seen:
+                continue
+            if role not in valid_roles:
+                raise ValueError(f"Invalid role for {username}: {role}")
+            branch = str(item.get("branch_code") or ("ALL" if role == "admin" else "MAIN")).strip().upper()
+            branch = "ALL" if role == "admin" else db.normalize_branch_code(branch)
+            validated.append((username, role, branch))
+            seen.add(username.lower())
+        return validated
+
+    def _apply_role_policy(self, policy):
+        self._verify_role_policy_signature(policy)
+        entries = self._validated_role_policy_entries(policy)
+        existing = {str(row["username"] or "").strip().lower() for row in db.get_all_users()}
+        applied = []
+        skipped = []
+        for username, role, branch in entries:
+            if username.lower() not in existing:
+                skipped.append(username)
+                continue
+            db.update_user_role(username, role, branch)
+            applied.append(username)
+        self.user_context = db.get_user_context(self.current_user)
+        self.is_admin = bool(self.user_context.get("is_admin"))
+        self.branch_code = self.user_context.get("branch_code", "MAIN")
+        self.active_branch_code = None if self.is_admin else self.branch_code
+        return applied, skipped
+
+    def publish_role_policy_to_cloud(self):
+        context = self.user_context or {}
+        role = str(context.get("role") or "").strip().lower()
+        username = str(self.current_user or "").strip().lower()
+        is_admin = bool(context.get("is_admin")) or username == "admin" or role == "admin"
+        if not is_admin:
+            QMessageBox.warning(self, "មិនមានសិទ្ធិ", "មុខងារនេះអនុញ្ញាតតែ Admin ប៉ុណ្ណោះ។")
+            return
+        if not self._check_git_installed():
+            QMessageBox.critical(self, "Git Required", "Git ត្រូវបានទាមទារសម្រាប់ publish role policy ទៅ private repo។")
+            return
+        repo_url = self.config.get('CATEGORIES', 'cloud_sync_repo_url', fallback="").strip()
+        if not repo_url:
+            QMessageBox.warning(self, "Cloud Repository", "សូមកំណត់ Cloud Sync Repository មុន។")
+            return
+        if not self._ensure_cloud_token_for_write():
+            return
+
+        private_key_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Role Policy Private Key",
+            self.base_dir,
+            "PEM Keys (*.pem);;All Files (*)",
+        )
+        if not private_key_path:
+            return
+
+        progress = QProgressDialog("Publishing signed role policy...", "Cancel", 0, 100, self)
+        style_progress_dialog(progress)
+        progress.setWindowModality(Qt.WindowModal)  # type: ignore[attr-defined]
+        progress.show()
+        temp_git_dir = None
+        try:
+            temp_root = os.path.join(tempfile.gettempdir(), "ClinicManager")
+            os.makedirs(temp_root, exist_ok=True)
+            temp_git_dir = self._create_cloud_git_workspace(repo_url, temp_root, "role_policy_publish_")
+            progress.setValue(25)
+            policy = self._build_role_policy()
+            signed_policy = self._sign_role_policy(policy, private_key_path)
+            with open(os.path.join(temp_git_dir, ROLE_POLICY_FILE_NAME), "w", encoding="utf-8") as f:
+                json.dump(signed_policy, f, indent=2, ensure_ascii=False, sort_keys=True)
+            progress.setValue(45)
+            published, failed_step, git_error = self._publish_cloud_git_workspace(
+                temp_git_dir,
+                f"Publish role policy - {len(policy['users'])} users",
+                progress,
+                45,
+                50,
+            )
+            if not published:
+                progress.close()
+                QMessageBox.critical(self, "Publish Failed", f"{failed_step}\n\n{git_error}")
+                return
+            progress.setValue(100)
+            progress.close()
+            QMessageBox.information(
+                self,
+                "Role Policy Published",
+                f"Signed role policy uploaded to {ROLE_POLICY_FILE_NAME}.\n\nUsers: {len(policy['users'])}"
+            )
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(self, "Role Policy Error", self._redact_cloud_token(str(e)))
+        finally:
+            if temp_git_dir:
+                shutil.rmtree(temp_git_dir, ignore_errors=True)
+
+    def sync_role_policy_from_cloud(self):
+        repo_url = self.config.get('CATEGORIES', 'cloud_sync_repo_url', fallback="").strip()
+        if not repo_url:
+            QMessageBox.warning(self, "Cloud Repository", "សូមកំណត់ Cloud Sync Repository មុន។")
+            return
+        if not self._check_git_installed():
+            QMessageBox.critical(self, "Git Required", "Git ត្រូវបានទាមទារសម្រាប់ sync role policy ពី private repo។")
+            return
+        if not self._ensure_cloud_token_for_read():
+            return
+
+        progress = QProgressDialog("Syncing signed role policy...", "Cancel", 0, 100, self)
+        style_progress_dialog(progress)
+        progress.setWindowModality(Qt.WindowModal)  # type: ignore[attr-defined]
+        progress.show()
+        temp_dir = None
+        try:
+            temp_root = os.path.join(tempfile.gettempdir(), "ClinicManager")
+            os.makedirs(temp_root, exist_ok=True)
+            temp_dir = tempfile.mkdtemp(prefix="role_policy_sync_", dir=temp_root)
+            policy_path = os.path.join(temp_dir, ROLE_POLICY_FILE_NAME)
+            self._copy_file_from_cloud_git_repo(
+                repo_url,
+                ROLE_POLICY_FILE_NAME,
+                policy_path,
+                temp_root,
+                "role_policy_fetch_",
+            )
+            progress.setValue(50)
+            with open(policy_path, "r", encoding="utf-8-sig") as f:
+                policy = json.load(f)
+            applied, skipped = self._apply_role_policy(policy)
+            progress.setValue(100)
+            progress.close()
+            QMessageBox.information(
+                self,
+                "Role Policy Synced",
+                f"Role policy verified and applied.\n\nUpdated users: {len(applied)}\nSkipped missing users: {len(skipped)}"
+            )
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(self, "Role Policy Error", self._redact_cloud_token(str(e)))
+        finally:
+            if temp_dir:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
     def _upload_to_github(self, repo_url):
         """ផ្ញើរបាយការណ៍ទៅ GitHub (ជម្រើសច្រើន: ថ្ងៃ/សប្តាហ៍/ខែ/កំណត់ដោយខ្លួនឯង)"""
@@ -3143,6 +3896,8 @@ class LoginDialog(BaseDialog):
                 filename_db = "clinic_full.db"
 
             temp_db = os.path.join(temp_git_dir, filename_db)
+            encrypted_filename_db = self._cloud_package_filename(filename_db)
+            encrypted_db = os.path.join(temp_git_dir, encrypted_filename_db)
 
             progress.setValue(25)
             progress.setLabelText("កំពុងបង្កើត database...")
@@ -3169,6 +3924,24 @@ class LoginDialog(BaseDialog):
                 )
                 return
 
+            progress.setValue(38)
+            progress.setLabelText("Encrypting Cloud database...")
+            QApplication.processEvents()
+            passphrase = self._get_cloud_encryption_passphrase(prompt=True)
+            if not passphrase:
+                progress.close()
+                QMessageBox.warning(
+                    self,
+                    "Cloud Sync Encryption",
+                    "Cloud Sync encryption passphrase is required before uploading."
+                )
+                return
+            self._encrypt_cloud_database(temp_db, encrypted_db, passphrase)
+            try:
+                os.remove(temp_db)
+            except Exception:
+                pass
+
             progress.setValue(40)
             progress.setLabelText("កំពុងបង្កើតឯកសារ...")
             QApplication.processEvents()
@@ -3182,7 +3955,11 @@ class LoginDialog(BaseDialog):
                 "start_date": start_date,
                 "end_date": end_date,
                 "patient_count": len(patients_selected),
-                "note": note if note_ok and note else ""
+                "note": note if note_ok and note else "",
+                "cloud_file": encrypted_filename_db,
+                "encrypted": True,
+                "encryption": "Fernet with PBKDF2HMAC-SHA256",
+                "access_policy": "Private repository or authenticated API token required; GitHub token should be scoped to this repo only"
             }
             with open(os.path.join(temp_git_dir, "report_metadata.json"), 'w', encoding='utf-8') as f:
                 json.dump(version_data, f, indent=2, ensure_ascii=False)
@@ -3228,7 +4005,7 @@ class LoginDialog(BaseDialog):
                 )
                 return
 
-            uploaded_db_url = self._github_repo_file_raw_url(repo_url, filename_db)
+            uploaded_db_url = self._github_repo_file_raw_url(repo_url, encrypted_filename_db)
             if uploaded_db_url:
                 try:
                     self.config.set('CATEGORIES', 'cloud_sync_url', uploaded_db_url)
@@ -3240,8 +4017,8 @@ class LoginDialog(BaseDialog):
 
             # គណនា file size មុនពេលសម្អាត temp folder
             file_size_mb = "N/A"
-            if os.path.exists(temp_db):
-                file_size_mb = f"{os.path.getsize(temp_db) / (1024*1024):.2f} MB"
+            if os.path.exists(encrypted_db):
+                file_size_mb = f"{os.path.getsize(encrypted_db) / (1024*1024):.2f} MB"
             else:
                 # បើ file មិនមាន បង្ហាញ error
                 progress.close()
@@ -3337,6 +4114,9 @@ class LoginDialog(BaseDialog):
 
     def show_github_setup(self):
         """បង្ហាញ Dialog សម្រាប់កំណត់ GitHub Repository របស់ Cloud Sync"""
+        if not self._require_cloud_write_access():
+            return
+
         repo_url, ok = QInputDialog.getText(
             self,
             "⚙️ កំណត់ Cloud Sync Repository",
@@ -3344,7 +4124,7 @@ class LoginDialog(BaseDialog):
             "ឧទាហរណ៍:\n"
             "https://github.com/saratboy1988-a11y/Clinic-Cloud-Sync.git\n\n"
             "ចំណាំ៖\n"
-            "• បង្កើត Repository មុន (Public ឬ Private)\n"
+            "• បង្កើត Private Repository មុន សម្រាប់ Cloud Sync ប៉ុណ្ណោះ\n"
             "• កុំប្រើ Clinic-Update repository ព្រោះវាសម្រាប់ Update កម្មវិធី\n"
             "• កំណត់ GitHub Token ដាច់ដោយឡែកសម្រាប់ Upload/Edit",
             text=self.config.get('CATEGORIES', 'cloud_sync_repo_url', fallback="https://github.com/saratboy1988-a11y/Clinic-Cloud-Sync.git")
@@ -3503,7 +4283,7 @@ class LoginDialog(BaseDialog):
         saved_url = self.config.get('CATEGORIES', 'cloud_sync_url', fallback="")
 
         # Default URL ពី GitHub
-        default_url = "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Cloud-Sync/main/clinic_01-04-2026_to_30-04-2026.db"
+        default_url = ""
 
         # បើគ្មាន saved URL ទេ ប្រើ default
         initial_url = saved_url if saved_url else default_url
@@ -3514,8 +4294,8 @@ class LoginDialog(BaseDialog):
             return
 
         url = ""
+        repo_url = self.config.get('CATEGORIES', 'cloud_sync_repo_url', fallback="").strip()
         if download_file_name:
-            repo_url = self.config.get('CATEGORIES', 'cloud_sync_repo_url', fallback="").strip()
             url = self._github_repo_file_raw_url(repo_url, download_file_name)
             if not url:
                 url = self._replace_cloud_sync_url_filename(initial_url, download_file_name)
@@ -3545,7 +4325,10 @@ class LoginDialog(BaseDialog):
             return
 
         # ៣.១ ពិនិត្យ URL មុនពេលទាញយក
-        is_valid_url, validation_message = self._preflight_cloud_sync_url(url)
+        is_repo_file_download = bool(download_file_name and repo_url)
+        if is_repo_file_download and not self._ensure_cloud_token_for_read():
+            return
+        is_valid_url, validation_message = (True, "") if is_repo_file_download else self._preflight_cloud_sync_url(url)
         if not is_valid_url:
             fallback_url = ""
             if download_file_name and saved_url and saved_url.strip() and saved_url.strip() != url:
@@ -3585,6 +4368,7 @@ class LoginDialog(BaseDialog):
                 QMessageBox.warning(self, "❌ URL មិនអាចប្រើបាន", fallback_message)
                 return
             url = fallback_url
+            is_repo_file_download = False
 
         # ៣.២ រក្សាទុក URL ក្រោយពេលពិនិត្យថាប្រើបាន
         try:
@@ -3631,6 +4415,8 @@ class LoginDialog(BaseDialog):
             import tempfile
             fd, temp_db = tempfile.mkstemp(suffix=".db", prefix="cloud_sync_")
             os.close(fd)
+            fd, temp_cloud_file = tempfile.mkstemp(suffix=".cloud", prefix="cloud_sync_package_")
+            os.close(fd)
 
             # Download file ជាមួយ timeout (៣០ វិនាទី)
             def download_progress(block_num, block_size, total_size):
@@ -3655,17 +4441,29 @@ class LoginDialog(BaseDialog):
             socket.setdefaulttimeout(30)  # ៣០ វិន្ទី
 
             try:
-                urllib.request.urlretrieve(url, temp_db, download_progress)
+                if is_repo_file_download:
+                    temp_root = os.path.join(tempfile.gettempdir(), "ClinicManager")
+                    os.makedirs(temp_root, exist_ok=True)
+                    self._copy_file_from_cloud_git_repo(
+                        repo_url,
+                        download_file_name,
+                        temp_cloud_file,
+                        temp_root,
+                        "cloud_sync_fetch_",
+                    )
+                    progress.setValue(100)
+                else:
+                    self._download_cloud_url(url, temp_cloud_file, download_progress)
             except urllib.error.HTTPError as e:
                 if e.code == 404:
                     raise Exception(
                         "រកមិនឃើញ file នៅលើ server (HTTP 404)\n"
-                        "សូមពិនិត្យថា URL ត្រឹមត្រូវ ហើយ file clinic.db មានពិតនៅ GitHub/Cloud។"
+                        "សូមពិនិត្យថា URL ត្រឹមត្រូវ ហើយ file .db.enc មានពិតនៅ private storage។"
                     )
                 if e.code == 403:
                     raise Exception(
                         "server មិនអនុញ្ញាតឱ្យទាញយក file នេះទេ (HTTP 403)\n"
-                        "សូមពិនិត្យថា repository/file ជា Public ឬមានសិទ្ធិចូលប្រើ។"
+                        "សូមពិនិត្យថា repository/file ជា private ហើយ token មានសិទ្ធិចូលប្រើ។"
                     )
                 raise Exception(f"Server error HTTP {e.code}: {e.reason}")
             except urllib.error.URLError as e:
@@ -3676,6 +4474,10 @@ class LoginDialog(BaseDialog):
             progress.setValue(100)
             progress.setLabelText("✅ ទាញយកជោគជ័យ! កំពុងផ្ទៀងផ្ទាត់...")
             QApplication.processEvents()
+
+            prepared_db, was_encrypted = self._prepare_downloaded_cloud_database(temp_cloud_file, os.path.dirname(temp_db))
+            if prepared_db != temp_db:
+                shutil.copy2(prepared_db, temp_db)
 
             # ៦. ផ្ទៀងផ្ទាត់ថា file ជា SQLite database ត្រឹមត្រូវ
             if not self._validate_sqlite_file(temp_db):
@@ -3704,6 +4506,10 @@ class LoginDialog(BaseDialog):
 
             # សម្អាត temp file
             os.remove(temp_db)
+            try:
+                os.remove(temp_cloud_file)
+            except Exception:
+                pass
             progress.close()
 
             success_dialog = QMessageBox(self)
@@ -3751,7 +4557,7 @@ class LoginDialog(BaseDialog):
                     f"<span style='color: #ffa801; font-weight: bold;'>សូមពិនិត្យ:</span><br>"
                     f"<span style='color: white;'>1. URL ត្រឹមត្រូវ (file មាននៅលើ GitHub)<br>"
                     f"2. ការតភ្ជាប់ Internet<br>"
-                    f"3. Repository ជា Public (ឬមាន Token)</span><br><br>"
+                    f"3. Repository ជា private ហើយមាន Token ត្រឹមត្រូវ</span><br><br>"
                     f"<span style='color: #05c46b; font-weight: bold;'>💡 ដំណោះស្រាយ:</span><br>"
                     f"<span style='color: white;'>• ចុច '⬆️ ផ្ញើទៅ Cloud' ដើម្បី Upload database មុន<br>"
                     f"• ឬប្តូរទៅ Repository ផ្សេងដែលមាន file</span><br><br>"
@@ -3990,14 +4796,14 @@ class LoginDialog(BaseDialog):
             end_date = date_dialog.end_date.date().toString("dd/MM/yyyy")
             period_label = f"កំណត់ដោយខ្លួនឯង ({start_date} - {end_date})"
         elif "Full Database" in choice:
-            return "clinic_full.db", "ទាំងអស់ (Full Database)", True
+            return self._cloud_package_filename("clinic_full.db"), "ទាំងអស់ (Full Database)", True
 
         if not start_date or not end_date:
             return None, "URL ដែលបានបញ្ចូល", True
 
         safe_start = start_date.replace("/", "-")
         safe_end = end_date.replace("/", "-")
-        return f"clinic_{safe_start}_to_{safe_end}.db", period_label, True
+        return self._cloud_package_filename(f"clinic_{safe_start}_to_{safe_end}.db"), period_label, True
 
     def _replace_cloud_sync_url_filename(self, url, file_name):
         """Replace the last URL path segment with a generated Cloud Sync filename."""
@@ -4031,7 +4837,7 @@ class LoginDialog(BaseDialog):
         try:
             request = urllib.request.Request(
                 url,
-                headers={"User-Agent": f"ClinicManager/{APP_VERSION}"},
+                headers=self._cloud_url_headers(url),
                 method="HEAD"
             )
             try:
@@ -4039,13 +4845,13 @@ class LoginDialog(BaseDialog):
             except urllib.error.HTTPError as e:
                 if e.code == 405:
                     response = urllib.request.urlopen(
-                        urllib.request.Request(url, headers={"User-Agent": f"ClinicManager/{APP_VERSION}"}),
+                        urllib.request.Request(url, headers=self._cloud_url_headers(url)),
                         timeout=10
                     )
                 elif e.code == 404:
                     return False, "រកមិនឃើញ file នៅ URL នេះទេ (HTTP 404)\n\nសូមពិនិត្យថា file មានពិតនៅ GitHub/Cloud។"
                 elif e.code == 403:
-                    return False, "URL នេះមិនអនុញ្ញាតឱ្យចូលប្រើទេ (HTTP 403)\n\nសូមពិនិត្យថា repository/file ជា Public។"
+                    return False, "URL នេះមិនអនុញ្ញាតឱ្យចូលប្រើទេ (HTTP 403)\n\nសូមពិនិត្យថា token មានសិទ្ធិអាន repository/file នេះ។"
                 else:
                     return False, f"URL នេះមានបញ្ហា HTTP {e.code}: {e.reason}"
 
@@ -5932,6 +6738,8 @@ class App(QWidget):
             ("🧹 Reset ទិន្នន័យចោល", self.reset_database, None),
             ("🚪 ចាកចេញពីកម្មវិធី (Logout)", self.logout, "Ctrl+Q"),
         ]
+        if self.is_admin:
+            secondary_actions.insert(13, ("👥 គ្រប់គ្រងសិទ្ធិ User", self.open_user_role_manager, None))
 
         for text, handler, shortcut in secondary_actions:
             action = QAction(text, self)
@@ -5959,51 +6767,26 @@ class App(QWidget):
         self.cloud_menu = QMenu(self)
         cloud_actions = [
             ("☁️ ទាញពី Cloud", lambda checked=False: self._run_cloud_helper_action("sync_data_initial", refresh_after=True)),
-            ("⬆️ ផ្ញើទៅ Cloud", lambda checked=False: self._run_cloud_helper_action("upload_to_cloud")),
-            ("✏️ កែទិន្នន័យ Cloud", lambda checked=False: self._run_cloud_helper_action("edit_uploaded_cloud_data")),
-            ("🗑️ លុបទិន្នន័យ Cloud", lambda checked=False: self._run_cloud_helper_action("delete_uploaded_cloud_data")),
-            ("⚙️ កំណត់ Cloud Repository", lambda checked=False: self._run_cloud_helper_action("show_github_setup")),
-            ("🔑 កំណត់ GitHub Token", lambda checked=False: self._run_cloud_helper_action("show_github_token_setup")),
-            ("❓ ជំនួយ Cloud", lambda checked=False: self._run_cloud_helper_action("show_cloud_sync_help")),
+            ("👥 Sync Role Policy", lambda checked=False: self._run_cloud_helper_action("sync_role_policy_from_cloud")),
+            ("🔑 GitHub Token (Read)", lambda checked=False: self._run_cloud_helper_action("show_github_read_token_setup")),
         ]
+        if self._can_manage_cloud_writes():
+            cloud_actions.extend([
+                ("⬆️ ផ្ញើទៅ Cloud", lambda checked=False: self._run_cloud_helper_action("upload_to_cloud")),
+                ("✏️ កែទិន្នន័យ Cloud", lambda checked=False: self._run_cloud_helper_action("edit_uploaded_cloud_data")),
+                ("🗑️ លុបទិន្នន័យ Cloud", lambda checked=False: self._run_cloud_helper_action("delete_uploaded_cloud_data")),
+                ("⚙️ កំណត់ Cloud Repository", lambda checked=False: self._run_cloud_helper_action("show_github_setup")),
+                ("🔑 កំណត់ GitHub Token", lambda checked=False: self._run_cloud_helper_action("show_github_token_setup")),
+            ])
+        if self.is_admin:
+            cloud_actions.append(("👥 Publish Role Policy", lambda checked=False: self._run_cloud_helper_action("publish_role_policy_to_cloud")))
+        cloud_actions.append(("❓ ជំនួយ Cloud", lambda checked=False: self._run_cloud_helper_action("show_cloud_sync_help")))
         for text, handler in cloud_actions:
             action = QAction(text, self)
             action.triggered.connect(handler)
             self.cloud_menu.addAction(action)
         self.cloud_btn.setMenu(self.cloud_menu)
         action_layout.addWidget(self.cloud_btn)
-
-        self.telegram_btn = create_telegram_button()
-        self.telegram_btn.setCursor(Qt.PointingHandCursor)  # type: ignore[attr-defined]
-        self.telegram_btn.setStyleSheet("""
-            QPushButton {
-                background: #0088cc;
-                color: white;
-                padding: 6px 13px;
-                border-radius: 5px;
-                font-weight: bold;
-                min-height: 25px;
-                text-decoration: none;
-            }
-            QPushButton:hover { background: #129fe3; }
-        """)
-        action_layout.addWidget(self.telegram_btn)
-
-        self.youtube_btn = create_youtube_button()
-        self.youtube_btn.setCursor(Qt.PointingHandCursor)  # type: ignore[attr-defined]
-        self.youtube_btn.setStyleSheet("""
-            QPushButton {
-                background: #ff0000;
-                color: white;
-                padding: 6px 13px;
-                border-radius: 5px;
-                font-weight: bold;
-                min-height: 25px;
-                text-decoration: none;
-            }
-            QPushButton:hover { background: #ff4757; }
-        """)
-        action_layout.addWidget(self.youtube_btn)
         action_layout.addStretch() # រុញប៊ូតុងឱ្យនៅខាងឆ្វេង
 
         # Set Tab Order dynamically based on patient type
@@ -7546,7 +8329,34 @@ class App(QWidget):
         dialog = LicenseStatusDialog(self)
         dialog.exec_()
 
+    def _can_manage_cloud_writes(self):
+        role = str((self.user_context or {}).get("role") or "").strip().lower()
+        username = str(self.current_user or "").strip().lower()
+        return bool(
+            self.is_admin
+            or (self.user_context or {}).get("can_manage_cloud")
+            or username == "admin"
+            or role in ("admin", "manager", "branch_manager", "cloud_manager")
+        )
+
     def _run_cloud_helper_action(self, method_name, refresh_after=False):
+        write_methods = {
+            "upload_to_cloud",
+            "edit_uploaded_cloud_data",
+            "delete_uploaded_cloud_data",
+            "show_github_setup",
+            "show_github_token_setup",
+            "publish_role_policy_to_cloud",
+        }
+        if method_name in write_methods and not self._can_manage_cloud_writes():
+            QMessageBox.warning(
+                self,
+                "🔒 មិនមានសិទ្ធិ",
+                "មុខងារ Upload / កែ / លុប Cloud អនុញ្ញាតតែ Admin ឬ Manager ប៉ុណ្ណោះ។\n\n"
+                "User ធម្មតាអាចប្រើតែ ទាញពី Cloud និង ជំនួយ Cloud។"
+            )
+            return
+
         helper = LoginDialog()
         helper.hide()
         helper.current_user = self.current_user
@@ -7558,6 +8368,11 @@ class App(QWidget):
         try:
             method = getattr(helper, method_name)
             method()
+            if method_name == "sync_role_policy_from_cloud":
+                self.user_context = db.get_user_context(self.current_user)
+                self.is_admin = bool(self.user_context.get("is_admin"))
+                self.branch_code = self.user_context.get("branch_code", "MAIN")
+                self.active_branch_code = None if self.is_admin else self.branch_code
             if refresh_after:
                 self.view()
                 self.update_next_serial_no()
@@ -9327,6 +10142,14 @@ class App(QWidget):
         if dialog.exec_() == QDialog.Accepted:
             self.statusBar.showMessage("ពាក្យសម្ងាត់ត្រូវបានប្តូរជោគជ័យ! (Password changed successfully)", 5000)
 
+    def open_user_role_manager(self):
+        """Open admin-only user role management."""
+        if not self.is_admin:
+            QMessageBox.warning(self, "មិនមានសិទ្ធិ", "មុខងារនេះអនុញ្ញាតតែ Admin ប៉ុណ្ណោះ។")
+            return
+        dialog = UserRoleManagerDialog(self)
+        dialog.exec_()
+
     def _on_focus_changed(self, old, new):
         """ប្តូរភាសាក្តារចុច Windows ដោយស្វ័យប្រវត្តិតាមការកំណត់របស់អ្នកប្រើប្រាស់"""
         if sys.platform != "win32" or not new:
@@ -9359,6 +10182,7 @@ class App(QWidget):
             with _urlopen_update_request(request, timeout=10) as response:
                 data = json.loads(response.read().decode("utf-8"))
 
+            self._verify_update_manifest_signature(data)
             remote_version = str(data.get("version", "")).strip()
             files_to_update = data.get("files", {})
             installer_info = data.get("installer", {})
@@ -9372,6 +10196,7 @@ class App(QWidget):
                         "Restore the updater manifest on GitHub."
                     )
                 raise ValueError("Invalid update manifest.")
+            self._validate_update_manifest(data)
 
             remote_v = self._parse_version(remote_version)
             local_v = self._parse_version(APP_VERSION)
@@ -9386,15 +10211,10 @@ class App(QWidget):
                 return
 
             if getattr(sys, "frozen", False):
-                installer_url = ""
-                installer_name = f"ClinicManager_Setup_{remote_version}.exe"
-                silent_args = ["/SP-", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
-                if isinstance(installer_info, dict):
-                    installer_url = str(installer_info.get("url", "")).strip()
-                    installer_name = os.path.basename(str(installer_info.get("file_name", installer_name))) or installer_name
-                    custom_args = installer_info.get("silent_args")
-                    if isinstance(custom_args, list) and custom_args:
-                        silent_args = [str(arg) for arg in custom_args]
+                installer_url, installer_name, installer_sha256 = self._normalize_installer_info(
+                    installer_info,
+                    remote_version,
+                )
 
                 if not installer_url:
                     QMessageBox.information(
@@ -9422,7 +10242,7 @@ class App(QWidget):
                     QMessageBox.Yes | QMessageBox.No
                 )
                 if reply == QMessageBox.Yes:
-                    self.perform_installer_update(installer_url, installer_name, remote_version, silent_args)
+                    self.perform_installer_update(installer_url, installer_name, remote_version, installer_sha256)
                 return
 
             applicable_files, skipped_files = self._filter_update_files(files_to_update)
@@ -9466,6 +10286,115 @@ class App(QWidget):
             QMessageBox.warning(self, "Update Error", f"Could not check for updates:\n{str(e)}")
             self.statusBar.showMessage("Update check failed.")
 
+    def _get_update_public_key_pem(self):
+        raw_key = os.getenv("CLINIC_UPDATE_PUBLIC_KEY", "").strip()
+        if raw_key:
+            if os.path.exists(raw_key):
+                with open(raw_key, "rb") as handle:
+                    return handle.read()
+            return raw_key.replace("\\n", "\n").encode("utf-8")
+
+        for key_path in (
+            get_config_path(UPDATE_MANIFEST_PUBLIC_KEY_FILE),
+            resource_path(UPDATE_MANIFEST_PUBLIC_KEY_FILE),
+        ):
+            if key_path and os.path.exists(key_path):
+                with open(key_path, "rb") as handle:
+                    return handle.read()
+
+        raise ValueError(
+            f"Update public key is missing. Add {UPDATE_MANIFEST_PUBLIC_KEY_FILE} "
+            "or set CLINIC_UPDATE_PUBLIC_KEY."
+        )
+
+    def _canonical_update_manifest_bytes(self, manifest):
+        signed_manifest = dict(manifest)
+        signed_manifest.pop(UPDATE_MANIFEST_SIGNATURE_FIELD, None)
+        return json.dumps(
+            signed_manifest,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    def _verify_update_manifest_signature(self, manifest):
+        if not isinstance(manifest, dict):
+            raise ValueError("Update manifest is not a JSON object.")
+        algorithm = str(manifest.get("signature_algorithm", UPDATE_MANIFEST_SIGNATURE_ALGORITHM)).lower()
+        if algorithm != UPDATE_MANIFEST_SIGNATURE_ALGORITHM:
+            raise ValueError(f"Unsupported update manifest signature algorithm: {algorithm}")
+
+        signature_text = str(manifest.get(UPDATE_MANIFEST_SIGNATURE_FIELD, "")).strip()
+        if not signature_text:
+            raise ValueError("Update manifest is unsigned.")
+
+        try:
+            from cryptography.exceptions import InvalidSignature
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        except ImportError as exc:
+            raise ValueError(
+                "Update signature verification requires the 'cryptography' package. "
+                "Install requirements.txt before using auto-update."
+            ) from exc
+
+        public_key = serialization.load_pem_public_key(self._get_update_public_key_pem())
+        if not isinstance(public_key, Ed25519PublicKey):
+            raise ValueError("Update public key must be an Ed25519 public key.")
+        payload = self._canonical_update_manifest_bytes(manifest)
+        try:
+            public_key.verify(base64.b64decode(signature_text), payload)
+        except (InvalidSignature, ValueError) as exc:
+            raise ValueError("Update manifest signature is invalid.") from exc
+
+    def _validate_sha256_text(self, sha256_text, label):
+        sha256_text = str(sha256_text or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", sha256_text):
+            raise ValueError(f"{label} is missing a valid SHA256 hash.")
+        return sha256_text
+
+    def _normalize_update_file_entry(self, file_name, entry):
+        normalized_name = os.path.basename(str(file_name))
+        if not normalized_name:
+            raise ValueError("Update manifest contains an empty file name.")
+        if isinstance(entry, dict):
+            url = str(entry.get("url", "")).strip()
+            sha256_text = entry.get("sha256", "")
+        else:
+            raise ValueError(f"Update file '{normalized_name}' must use url and sha256 fields.")
+        if not url:
+            raise ValueError(f"Update file '{normalized_name}' is missing a URL.")
+        sha256_text = self._validate_sha256_text(sha256_text, f"Update file '{normalized_name}'")
+        return {
+            "file_name": normalized_name,
+            "url": url,
+            "sha256": sha256_text,
+        }
+
+    def _normalize_installer_info(self, installer_info, remote_version):
+        if not isinstance(installer_info, dict):
+            return "", f"ClinicManager_Setup_{remote_version}.exe", ""
+        installer_url = str(installer_info.get("url", "")).strip()
+        installer_name = os.path.basename(
+            str(installer_info.get("file_name", f"ClinicManager_Setup_{remote_version}.exe"))
+        ) or f"ClinicManager_Setup_{remote_version}.exe"
+        installer_sha256 = self._validate_sha256_text(
+            installer_info.get("sha256", ""),
+            f"Installer '{installer_name}'",
+        ) if installer_url else ""
+        return installer_url, installer_name, installer_sha256
+
+    def _validate_update_manifest(self, manifest):
+        files_to_update = manifest.get("files", {})
+        if not isinstance(files_to_update, dict):
+            raise ValueError("Update manifest files must be an object.")
+        for file_name, entry in files_to_update.items():
+            self._normalize_update_file_entry(file_name, entry)
+
+        installer_info = manifest.get("installer", {})
+        if installer_info:
+            self._normalize_installer_info(installer_info, manifest.get("version", ""))
+
     def _parse_version(self, version_text):
         parts = [int(part) for part in re.findall(r"\d+", str(version_text))]
         if not parts:
@@ -9479,8 +10408,9 @@ class App(QWidget):
         skipped_files = []
         is_frozen = getattr(sys, "frozen", False)
 
-        for file_name, url in files_dict.items():
-            normalized_name = os.path.basename(str(file_name))
+        for file_name, entry in files_dict.items():
+            file_info = self._normalize_update_file_entry(file_name, entry)
+            normalized_name = file_info["file_name"]
             lower_name = normalized_name.lower()
 
             if lower_name == "settings.ini":
@@ -9491,14 +10421,28 @@ class App(QWidget):
                 skipped_files.append(normalized_name)
                 continue
 
-            applicable_files[normalized_name] = url
+            applicable_files[normalized_name] = file_info
 
         return applicable_files, skipped_files
 
     def _get_update_target_path(self, file_name):
         return os.path.join(self.base_dir, file_name)
 
-    def _download_update_file(self, url, target_path):
+    def _verify_download_sha256(self, file_path, expected_sha256):
+        expected_sha256 = self._validate_sha256_text(expected_sha256, os.path.basename(file_path))
+        digest = hashlib.sha256()
+        with open(file_path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        actual_sha256 = digest.hexdigest()
+        if actual_sha256.lower() != expected_sha256.lower():
+            raise ValueError(
+                f"SHA256 mismatch for {os.path.basename(file_path)}.\n"
+                f"Expected: {expected_sha256}\n"
+                f"Actual:   {actual_sha256}"
+            )
+
+    def _download_update_file(self, url, target_path, expected_sha256):
         request = urllib.request.Request(
             url,
             headers={"User-Agent": f"ClinicManager/{APP_VERSION}"}
@@ -9506,6 +10450,7 @@ class App(QWidget):
         with _urlopen_update_request(request, timeout=20) as response:
             with open(target_path, "wb") as handle:
                 shutil.copyfileobj(response, handle)
+        self._verify_download_sha256(target_path, expected_sha256)
 
     def _restart_after_update(self):
         if getattr(sys, "frozen", False):
@@ -9514,22 +10459,21 @@ class App(QWidget):
             subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0])], cwd=self.base_dir)
         QApplication.quit()
 
-    def perform_installer_update(self, installer_url, installer_name, remote_version, silent_args=None):
+    def perform_installer_update(self, installer_url, installer_name, remote_version, installer_sha256):
         """Download a setup EXE and run it after this process exits."""
-        silent_args = silent_args or ["/SP-", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
         temp_dir = tempfile.mkdtemp(prefix="clinic_installer_update_", dir=tempfile.gettempdir())
         installer_path = os.path.join(temp_dir, installer_name)
         runner_path = os.path.join(temp_dir, "run_update.bat")
 
         try:
             self.statusBar.showMessage(f"Downloading installer {installer_name}...")
-            self._download_update_file(installer_url, installer_path)
+            self._download_update_file(installer_url, installer_path, installer_sha256)
 
             if not os.path.exists(installer_path) or os.path.getsize(installer_path) == 0:
                 raise ValueError("Downloaded installer is empty or missing.")
 
             exe_path = sys.executable
-            args_text = " ".join(f'"{arg}"' for arg in silent_args)
+            args_text = " ".join(f'"{arg}"' for arg in UPDATE_INSTALLER_SILENT_ARGS)
             runner = f"""@echo off
 timeout /t 2 /nobreak >nul
 start "" /wait "{installer_path}" {args_text}
@@ -9569,10 +10513,10 @@ rmdir /s /q "{temp_dir}"
         replaced_files = []
 
         try:
-            for file_name, url in files_dict.items():
+            for file_name, file_info in files_dict.items():
                 self.statusBar.showMessage(f"Downloading {file_name}...")
                 temp_path = os.path.join(temp_dir, file_name)
-                self._download_update_file(url, temp_path)
+                self._download_update_file(file_info["url"], temp_path, file_info["sha256"])
                 downloaded_files[file_name] = temp_path
 
             os.makedirs(backup_dir, exist_ok=True)

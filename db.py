@@ -901,18 +901,20 @@ def get_patient_by_id(patient_id):
 def get_user_context(username):
     user = execute_read("SELECT * FROM users WHERE username=?", (username,), one=True)
     if not user:
-        return {"username": username, "role": "user", "branch_code": "MAIN", "is_admin": False}
+        return {"username": username, "role": "user", "branch_code": "MAIN", "is_admin": False, "can_manage_cloud": False}
     user_dict = dict(user)
     role = str(user_dict.get("role") or "user").strip().lower()
     branch_code = normalize_branch_code(user_dict.get("branch_code") or ("ALL" if str(username).lower() == "admin" else "MAIN"))
     is_admin = role == "admin" or str(username).strip().lower() == "admin"
+    can_manage_cloud = is_admin or role in ("manager", "branch_manager", "cloud_manager")
     if is_admin:
         branch_code = "ALL"
     return {
         "username": user_dict.get("username", username),
-        "role": "admin" if is_admin else "user",
+        "role": "admin" if is_admin else role,
         "branch_code": branch_code,
         "is_admin": is_admin,
+        "can_manage_cloud": can_manage_cloud,
     }
 
 def save_license_info(install_date, license_key, email, machine_id):
@@ -1122,7 +1124,7 @@ def check_user(username, password):
 def add_user(username, password, branch_code="MAIN", role="user"):
     hashed_password = _hash_password(password)
     role = str(role or "user").strip().lower()
-    if role not in ("admin", "user"):
+    if role not in ("admin", "manager", "branch_manager", "cloud_manager", "user"):
         role = "user"
     branch_code = "ALL" if role == "admin" else normalize_branch_code(branch_code)
     execute_write(
@@ -1132,6 +1134,31 @@ def add_user(username, password, branch_code="MAIN", role="user"):
 
 def check_username(username):
     return execute_read("SELECT * FROM users WHERE username=?", (username,), one=True)
+
+
+def get_all_users():
+    return execute_read(
+        """
+        SELECT id, username, role, branch_code
+        FROM users
+        ORDER BY username COLLATE NOCASE
+        """
+    ) or []
+
+
+def update_user_role(username, role, branch_code="MAIN"):
+    username = str(username or "").strip()
+    role = str(role or "user").strip().lower()
+    if not username:
+        raise ValueError("Username is required.")
+    if role not in ("admin", "manager", "branch_manager", "cloud_manager", "user"):
+        role = "user"
+
+    branch_code = "ALL" if role == "admin" else normalize_branch_code(branch_code)
+    execute_write(
+        "UPDATE users SET role=?, branch_code=? WHERE username=?",
+        (role, branch_code, username)
+    )
 
 
 def get_usernames(branch_code=None):

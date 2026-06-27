@@ -1,18 +1,40 @@
 {
-  "version": "2.1.5",
+  "version": "2.1.6",
   "installer": {
-    "url": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/ClinicManager_Setup_2.1.5.exe",
-    "file_name": "ClinicManager_Setup_2.1.5.exe",
-    "silent_args": [
-      "/SP-",
-      "/VERYSILENT",
-      "/SUPPRESSMSGBOXES",
-      "/NORESTART"
-    ]
+    "url": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/ClinicManager_Setup_2.1.6.exe",
+    "file_name": "ClinicManager_Setup_2.1.6.exe",
+    "sha256": "ae54b6fa4248fe85e392b8c941c2949491ca4310981afef0b0d0fdfab19d411c"
   },
   "files": {
-    "main.py": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/main.py",
-    "db.py": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/db.py",
-    "version_manager.py": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/version_manager.py"
-  }
+    "main.py": {
+      "url": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/main.py",
+      "sha256": "f7004ad4c9a4713ecd496288e087066aed0863e8f4370d35d57537720fd3469b"
+    },
+    "db.py": {
+      "url": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/db.py",
+      "sha256": "3629019912a16845cecdc045e10451d099143670b6844bf11988169c6dafd94f"
+    },
+    "version_manager.py": {
+      "url": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/version_manager.py",
+      "sha256": "68028ba480ac5096d48ea8a7ea45c95bdc442c209cb471e7f9b239117ccff7f5"
+    },
+    "license_manager.py": {
+      "url": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/license_manager.py",
+      "sha256": "a8c14c2371b9fe7d3ee8b16e716455a7a1865d661d86dc57cf5bbfcf45d3000a"
+    },
+    "role_policy_tool.py": {
+      "url": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/role_policy_tool.py",
+      "sha256": "a4796a0a678e1378d6add9ec61d7d4c35a0d73381d685ec94f322b5faea13024"
+    },
+    "update_public_key.pem": {
+      "url": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/update_public_key.pem",
+      "sha256": "f1d43001043d6e0ec1bc67b89226e42d588dc5d595b28fea14ff75073de2cd4a"
+    },
+    "role_policy_public_key.pem": {
+      "url": "https://raw.githubusercontent.com/saratboy1988-a11y/Clinic-Update/main/role_policy_public_key.pem",
+      "sha256": "8e41f0ca7ee7a5a7e14a28783695b378adb8406a91bc832ac0c45999ba8a240f"
+    }
+  },
+  "signature_algorithm": "ed25519",
+  "signature": "KX9zGwSY+5AEj7/yP1ymzW04+Yx5CHArKe8WAt3w0X6jUgIrzVepW0vEOWnFkAGNo6vhrKbStf8It/W73+ulDA=="
 }
